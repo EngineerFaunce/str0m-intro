@@ -2,6 +2,8 @@ use once_cell::sync::Lazy;
 use std::net::IpAddr;
 use systemstat::{Platform, System};
 
+pub mod client;
+
 static HOST_ADDRESS: Lazy<IpAddr> = Lazy::new(|| {
     let system = System::new();
     let networks = system.networks().unwrap();
