@@ -1,7 +1,8 @@
+use once_cell::sync::Lazy;
 use std::net::IpAddr;
 use systemstat::{Platform, System};
 
-pub fn get_external_ip_address() -> IpAddr {
+static HOST_ADDRESS: Lazy<IpAddr> = Lazy::new(|| {
     let system = System::new();
     let networks = system.networks().unwrap();
 
@@ -16,4 +17,8 @@ pub fn get_external_ip_address() -> IpAddr {
     }
 
     panic!("Found no usable network interface");
+});
+
+pub fn get_external_ip_address() -> IpAddr {
+    *HOST_ADDRESS
 }

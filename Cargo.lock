@@ -1296,6 +1296,7 @@ dependencies = [
 name = "str0m-intro"
 version = "0.1.0"
 dependencies = [
+ "once_cell",
  "rouille",
  "rustls",
  "serde_json",
