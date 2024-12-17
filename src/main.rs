@@ -15,22 +15,8 @@ use str0m::net::Protocol;
 use str0m::net::Receive;
 use str0m::{Candidate, Event, IceConnectionState, Input, Output, Rtc, RtcError};
 
-mod util;
+use str0m_intro::{get_external_ip_address, init_log};
 
-fn init_log() {
-    use std::env;
-    // use tracing_subscriber::{fmt, prelude::*, EnvFilter};
-    use tracing_subscriber::{fmt, prelude::*};
-
-    if env::var("RUST_LOG").is_err() {
-        env::set_var("RUST_LOG", "http_post=debug,str0m=debug");
-    }
-
-    tracing_subscriber::registry()
-        .with(fmt::layer())
-        // .with(EnvFilter::from_default_env())
-        .init();
-}
 
 pub fn main() {
     init_log();
@@ -39,7 +25,7 @@ pub fn main() {
     let private_key = include_bytes!("key.pem").to_vec();
 
     // Figure out some public IP address, since Firefox will not accept 127.0.0.1 for WebRTC traffic.
-    let host_addr = util::select_host_address();
+    let host_addr = get_external_ip_address();
 
     let server = Server::new_ssl("0.0.0.0:3000", web_request, certificate, private_key)
         .expect("starting the web server");
