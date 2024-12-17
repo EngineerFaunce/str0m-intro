@@ -1,7 +1,7 @@
 use std::net::IpAddr;
 use systemstat::{Platform, System};
 
-pub fn select_host_address() -> IpAddr {
+pub fn get_external_ip_address() -> IpAddr {
     let system = System::new();
     let networks = system.networks().unwrap();
 
