@@ -6,7 +6,7 @@ use client::Client;
 use rouille::{Server, Request, Response};
 
 use str0m::change::SdpAnswer;
-use str0m_intro::{logging::init_log, util::get_external_ip_address};
+use str0m_intro::util::{get_external_ip_address, logging::init_log};
 
 mod client;
 
