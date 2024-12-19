@@ -14,7 +14,7 @@ if [ ! command -v openssl &> /dev/null ]; then
   die "Error: OpenSSL is not installed. Please install OpenSSL to continue." 1
 fi
 
-certs_dir="$script_dir/../certs"
+certs_dir="$script_dir/../src/certs"
 
 # Generate a private key
 openssl genpkey -algorithm RSA -out $certs_dir/key.pem -pkeyopt rsa_keygen_bits:2048
