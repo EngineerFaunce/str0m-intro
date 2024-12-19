@@ -1,6 +1,6 @@
 use reqwest::{self, ClientBuilder};
 use str0m::change::SdpOffer;
-use str0m_intro::{client::Client, logging::init_log, util::get_external_ip_address};
+use str0m_intro::{client::Client, util::{get_external_ip_address, logging::init_log}};
 use tokio;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
