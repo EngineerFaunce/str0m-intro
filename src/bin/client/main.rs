@@ -1,17 +1,13 @@
+use anyhow::Error;
 use reqwest::{self, ClientBuilder};
 use str0m::change::SdpOffer;
 use str0m_intro::{
     client::Client,
     util::{get_external_ip_address, logging::init_log},
 };
-use tokio;
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(async_main())
-}
-
-async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::main]
+async fn main() -> Result<(), Error> {
     init_log();
 
     let base_url = format!("https://{}:3000", get_external_ip_address());
