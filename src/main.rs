@@ -1,15 +1,14 @@
 #[macro_use]
 extern crate tracing;
 
-use std::io::Read;
 use client::Client;
-use rouille::{Server, Request, Response};
+use rouille::{Request, Response, Server};
+use std::{io::Read, thread};
 
 use str0m::change::SdpAnswer;
 use str0m_intro::util::{get_external_ip_address, logging::init_log};
 
 mod client;
-
 
 pub fn main() {
     init_log();
@@ -58,7 +57,7 @@ fn web_request(request: &Request) -> Response {
         let mut buf = Vec::new();
         data.read_to_end(&mut buf).expect("data to be read");
         let answer: SdpAnswer = serde_json::from_slice(&buf).expect("data to be deserialized");
-        
+
         // Accept the answer.
         client.accept_answer(answer).expect("answer to be accepted");
     }

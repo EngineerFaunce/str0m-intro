@@ -1,6 +1,15 @@
-use std::{io::ErrorKind, net::{SocketAddr, SocketAddrV4, UdpSocket}, process, thread, time::{Duration, Instant}};
+use std::{
+    io::ErrorKind,
+    net::{SocketAddr, SocketAddrV4, UdpSocket},
+    process, thread,
+    time::{Duration, Instant},
+};
 
-use str0m::{change::{SdpAnswer, SdpOffer, SdpPendingOffer}, net::{Protocol, Receive}, Candidate, Event, IceConnectionState, Input, Output, Rtc, RtcError};
+use str0m::{
+    change::{SdpAnswer, SdpOffer, SdpPendingOffer},
+    net::{Protocol, Receive},
+    Candidate, Event, IceConnectionState, Input, Output, Rtc, RtcError,
+};
 use tracing::info;
 use uuid::Uuid;
 
@@ -10,7 +19,7 @@ pub struct Client {
     rtc: Rtc,
     pending: Option<SdpPendingOffer>,
     socket: UdpSocket,
-    local_socket_addr: Option<SocketAddr>
+    local_socket_addr: Option<SocketAddr>,
 }
 
 impl Client {
@@ -34,7 +43,7 @@ impl Client {
             rtc,
             pending: None,
             socket,
-            local_socket_addr: None
+            local_socket_addr: None,
         })
     }
 
@@ -43,13 +52,18 @@ impl Client {
 
         self.rtc.add_local_candidate(
             Candidate::host(*socket_addr, str0m::net::Protocol::Udp)
-                .expect("Failed to create local candidate")
+                .expect("Failed to create local candidate"),
         );
     }
 
-    pub fn create_offer(&mut self) -> Result<SdpOffer, RtcError>{
+    pub fn create_offer(&mut self) -> Result<SdpOffer, RtcError> {
         let mut change = self.rtc.sdp_api();
-        let _mid = change.add_media(str0m::media::MediaKind::Video, str0m::media::Direction::SendRecv, None, None);
+        let _mid = change.add_media(
+            str0m::media::MediaKind::Video,
+            str0m::media::Direction::SendRecv,
+            None,
+            None,
+        );
         let (offer, pending) = change.apply().unwrap();
 
         self.pending = Some(pending);
@@ -58,7 +72,8 @@ impl Client {
     }
 
     pub fn create_answer(&mut self, offer: SdpOffer) -> Result<SdpAnswer, RtcError> {
-        let answer = self.rtc
+        let answer = self
+            .rtc
             .sdp_api()
             .accept_offer(offer)
             .expect("offer to be accepted");
@@ -67,8 +82,10 @@ impl Client {
     }
 
     pub fn accept_answer(&mut self, answer: SdpAnswer) -> Result<(), RtcError> {
-        let _ = self.rtc.sdp_api().accept_answer(self.pending.take().unwrap(), answer);
+        let _ = self
+            .rtc
+            .sdp_api()
+            .accept_answer(self.pending.take().unwrap(), answer);
         Ok(())
     }
 }
-    

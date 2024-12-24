@@ -1,6 +1,9 @@
 use reqwest::{self, ClientBuilder};
 use str0m::change::SdpOffer;
-use str0m_intro::{client::Client, util::{get_external_ip_address, logging::init_log}};
+use str0m_intro::{
+    client::Client,
+    util::{get_external_ip_address, logging::init_log},
+};
 use tokio;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -16,15 +19,16 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
     let http_client = ClientBuilder::new()
         .danger_accept_invalid_certs(true)
         .build()?;
-    
+
     // * Make a GET request to the server to get the offer.
     let signal_url = format!("{}/offer", base_url);
-    let res = http_client.get(signal_url)
-        .send()
-        .await?;
+    let res = http_client.get(signal_url).send().await?;
 
     // Deserialize the offer.
-    let offer = res.json::<SdpOffer>().await.expect("offer to be deserialized");
+    let offer = res
+        .json::<SdpOffer>()
+        .await
+        .expect("offer to be deserialized");
 
     // * Create an SDP Answer.
     let mut client = Client::new().expect("Failed to create client");
@@ -32,10 +36,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
 
     // * Send the answer back to the server
     let answer_url = format!("{}/answer", base_url);
-    let _ = http_client.post(answer_url)
-        .json(&answer)
-        .send()
-        .await?;
+    let _ = http_client.post(answer_url).json(&answer).send().await?;
 
     Ok(())
 }
