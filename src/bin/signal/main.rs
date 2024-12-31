@@ -25,8 +25,8 @@ struct AnswerSignal {
 pub fn main() {
     init_log();
 
-    let certificate = include_bytes!("./certs/cer.pem").to_vec();
-    let private_key = include_bytes!("./certs/key.pem").to_vec();
+    let certificate = include_bytes!("../../certs/cer.pem").to_vec();
+    let private_key = include_bytes!("../../certs/key.pem").to_vec();
 
     // // Figure out some public IP address, since Firefox will not accept 127.0.0.1 for WebRTC traffic.
     // let host_addr = get_host_ip_address();
@@ -54,11 +54,6 @@ pub fn main() {
 
 // Handle a web request.
 fn web_request(request: &Request, tx: SyncSender<Signal>) -> Response {
-    // ! A simple client implementation.
-    if request.url() == "/" && request.method() == "GET" {
-        return Response::html(include_str!("http-post.html"));
-    }
-
     // ? This is just for debugging purposes.
     if request.url() == "/health" && request.method() == "GET" {
         info!("Received request from: {:?}", request.remote_addr());
