@@ -1,8 +1,10 @@
 use anyhow::Error;
 use reqwest::{self, ClientBuilder};
-use str0m_intro::{
-    client::{Client, WebRtcEvent},
-    util::{get_host_ip_address, logging::init_log, SdpExchange, SdpMessageType},
+use signaling::{
+    client::Client,
+    message::{SdpExchange, SdpMessageType},
+    util::{logging::init_log, network::get_host_ip_address},
+    WebRtcEvent,
 };
 
 #[tokio::main]

@@ -1,9 +1,6 @@
 use once_cell::sync::Lazy;
 use std::net::IpAddr;
-use str0m::change::{SdpAnswer, SdpOffer};
 use systemstat::{Platform, System};
-
-pub mod logging;
 
 static HOST_ADDRESS: Lazy<IpAddr> = Lazy::new(|| get_random_ip_address());
 
@@ -26,16 +23,4 @@ pub fn get_random_ip_address() -> IpAddr {
     }
 
     panic!("Found no usable network interface");
-}
-
-#[derive(serde::Serialize, serde::Deserialize, Debug)]
-pub enum SdpMessageType {
-    SdpOffer(SdpOffer),
-    SdpAnswer(SdpAnswer),
-}
-
-#[derive(serde::Serialize, serde::Deserialize, Debug)]
-pub struct SdpExchange {
-    pub client_id: uuid::Uuid,
-    pub sdp_payload: SdpMessageType,
 }

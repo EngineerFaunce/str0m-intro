@@ -1,4 +1,3 @@
-use crate::util::get_random_ip_address;
 use std::{
     io::ErrorKind,
     net::{SocketAddr, UdpSocket},
@@ -12,10 +11,7 @@ use str0m::{
 use tracing::info;
 use uuid::Uuid;
 
-pub enum WebRtcEvent {
-    Continue,
-    Disconnected,
-}
+use crate::{util::network::get_random_ip_address, WebRtcEvent};
 
 #[derive(Debug)]
 pub struct Client {

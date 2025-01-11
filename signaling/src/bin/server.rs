@@ -1,15 +1,14 @@
-#[macro_use]
-extern crate tracing;
-
 use core::panic;
 use rouille::{Request, Response, Server};
+use signaling::client::Client;
+use signaling::message::{SdpExchange, SdpMessageType};
+use signaling::util::logging::init_log;
+use signaling::WebRtcEvent;
 use std::collections::HashMap;
 use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError};
 use std::{io::Read, thread};
 use str0m::change::{SdpAnswer, SdpOffer};
-use str0m_intro::client::{Client, WebRtcEvent};
-use str0m_intro::util::logging::init_log;
-use str0m_intro::util::{SdpExchange, SdpMessageType};
+use tracing::info;
 use uuid::Uuid;
 
 enum Signal {
@@ -25,11 +24,8 @@ struct AnswerSignal {
 pub fn main() {
     init_log();
 
-    let certificate = include_bytes!("../../certs/cer.pem").to_vec();
-    let private_key = include_bytes!("../../certs/key.pem").to_vec();
-
-    // // Figure out some public IP address, since Firefox will not accept 127.0.0.1 for WebRTC traffic.
-    // let host_addr = get_host_ip_address();
+    let certificate = include_bytes!("../certs/cer.pem").to_vec();
+    let private_key = include_bytes!("../certs/key.pem").to_vec();
 
     // ? tx = transmission
     // ? rx = receiving
@@ -46,9 +42,6 @@ pub fn main() {
     )
     .expect("starting the web server");
 
-    // let port = server.server_addr().port();
-    // info!("Connect a browser to https://{:?}:{:?}", host_addr, port);
-
     server.run();
 }
 
@@ -63,12 +56,11 @@ fn web_request(request: &Request, tx: SyncSender<Signal>) -> Response {
     // * This is one half of the signaling process where we create an offer and send it to the client.
     if request.url() == "/offer" && request.method() == "GET" {
         let mut client = Client::new().expect("Failed to create client");
-        // client.add_local_candidate(&addr);
         let offer: SdpOffer = client.create_offer().expect("offer to be created");
 
         let response = SdpExchange {
             client_id: client.id,
-            sdp_payload: str0m_intro::util::SdpMessageType::SdpOffer(offer),
+            sdp_payload: SdpMessageType::SdpOffer(offer),
         };
 
         tx.send(Signal::Offer(client)).expect("client to be sent");
@@ -100,6 +92,7 @@ fn web_request(request: &Request, tx: SyncSender<Signal>) -> Response {
     Response::empty_404()
 }
 
+/// SFU server to process clients.
 fn process_clients(rx: Receiver<Signal>) {
     let mut pending_clients: HashMap<Uuid, Client> = HashMap::new();
 
@@ -111,7 +104,9 @@ fn process_clients(rx: Receiver<Signal>) {
             }
             Ok(Signal::Answer(answer)) => {
                 info!("Received answer from client: {:?}", answer.id);
+
                 // Accept the answer
+                // TODO: error handling
                 let mut client = pending_clients.remove(&answer.id).unwrap();
                 client
                     .accept_answer(answer.answer)
