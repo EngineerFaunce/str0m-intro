@@ -1,6 +1,6 @@
 use std::{
     io::ErrorKind,
-    net::{SocketAddr, UdpSocket},
+    net::UdpSocket,
     time::{Duration, Instant},
 };
 use str0m::{
@@ -11,7 +11,7 @@ use str0m::{
 use tracing::info;
 use uuid::Uuid;
 
-use crate::{util::network::get_random_ip_address, WebRtcEvent};
+use crate::{util::network::get_socket_addr, WebRtcEvent};
 
 #[derive(Debug)]
 pub struct Client {
@@ -23,7 +23,7 @@ pub struct Client {
 
 impl Client {
     pub fn new() -> Result<Self, RtcError> {
-        let socket_addr = SocketAddr::new(get_random_ip_address(), 0);
+        let socket_addr = get_socket_addr();
         let socket = UdpSocket::bind(socket_addr).expect("Should bind udp socket");
 
         let mut rtc = Rtc::builder()

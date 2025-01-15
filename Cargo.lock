@@ -294,6 +294,8 @@ dependencies = [
  "reqwest",
  "signaling",
  "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

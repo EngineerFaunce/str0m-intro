@@ -6,11 +6,13 @@ use signaling::{
     util::{logging::init_log, network::get_host_ip_address},
     WebRtcEvent,
 };
+use tracing::info;
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
     init_log();
 
+    // TODO (future): Will likely need to be updated to accept input of the server's address
     let base_url = format!("https://{}:3000", get_host_ip_address());
 
     let http_client = ClientBuilder::new()
@@ -51,11 +53,15 @@ async fn main() -> Result<(), Error> {
     loop {
         let event = client.recv();
         match event {
-            Ok(WebRtcEvent::Continue) => {}
+            Ok(WebRtcEvent::Continue) => {
+                continue;
+            }
             Ok(WebRtcEvent::Disconnected) => {
+                info!("disconnected");
                 break;
             }
             Err(_e) => {
+                info!("error {:?}", _e);
                 break;
             }
         }

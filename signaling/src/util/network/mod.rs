@@ -1,5 +1,5 @@
 use once_cell::sync::Lazy;
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use systemstat::{Platform, System};
 
 static HOST_ADDRESS: Lazy<IpAddr> = Lazy::new(|| get_random_ip_address());
@@ -23,4 +23,8 @@ pub fn get_random_ip_address() -> IpAddr {
     }
 
     panic!("Found no usable network interface");
+}
+
+pub fn get_socket_addr() -> SocketAddr {
+    SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0)
 }
