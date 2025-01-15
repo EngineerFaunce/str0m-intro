@@ -1,6 +1,5 @@
 use core::panic;
 use rouille::{Request, Response, Server};
-use signaling::client::Client;
 use signaling::message::{SdpExchange, SdpMessageType};
 use signaling::util::logging::init_log;
 use signaling::WebRtcEvent;

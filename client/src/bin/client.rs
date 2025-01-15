@@ -1,7 +1,8 @@
 use anyhow::Error;
+// TODO: this is silly. Should this be declared in lib.rs?
+use client::client::Client;
 use reqwest::{self, ClientBuilder};
 use signaling::{
-    client::Client,
     message::{SdpExchange, SdpMessageType},
     util::{logging::init_log, network::get_host_ip_address},
     WebRtcEvent,
@@ -12,26 +13,9 @@ use tracing::info;
 async fn main() -> Result<(), Error> {
     init_log();
 
-    // TODO (future): Will likely need to be updated to accept input of the server's address
-    let base_url = format!("https://{}:3000", get_host_ip_address());
-
-    let http_client = ClientBuilder::new()
-        .danger_accept_invalid_certs(true)
-        .build()?;
-
-    // * Make a GET request to the server to get the offer.
-    let signal_url = format!("{}/offer", base_url);
-    let res = http_client.get(signal_url).send().await?;
-
-    // Deserialize the client ID and SdpOffer.
-    let exchange = res
-        .json::<SdpExchange>()
-        .await
-        .expect("offer to be deserialized");
-    let client_id = exchange.client_id;
-    let sdp_message = exchange.sdp_payload;
-
     let mut client = Client::new().expect("Failed to create client");
+
+    let sdp_message = client.send_offer().await?;
 
     match sdp_message {
         SdpMessageType::SdpOffer(offer) => {

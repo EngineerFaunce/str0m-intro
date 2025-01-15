@@ -1,3 +1,10 @@
+use anyhow::Error;
+use reqwest::ClientBuilder;
+use signaling::{
+    message::{SdpExchange, SdpMessageType},
+    util::network::{get_host_ip_address, get_socket_addr},
+    WebRtcEvent,
+};
 use std::{
     io::ErrorKind,
     net::UdpSocket,
@@ -8,10 +15,8 @@ use str0m::{
     net::{Protocol, Receive},
     Candidate, Event, Input, Output, Rtc, RtcError,
 };
-use tracing::info;
+use tracing::{debug, info};
 use uuid::Uuid;
-
-use crate::{util::network::get_socket_addr, WebRtcEvent};
 
 #[derive(Debug)]
 pub struct Client {
@@ -19,6 +24,7 @@ pub struct Client {
     rtc: Rtc,
     pending: Option<SdpPendingOffer>,
     socket: UdpSocket,
+    http_client: reqwest::Client,
 }
 
 impl Client {
@@ -26,6 +32,13 @@ impl Client {
         let socket_addr = get_socket_addr();
         let socket = UdpSocket::bind(socket_addr).expect("Should bind udp socket");
 
+        // * Set up the http client
+
+        let http_client = ClientBuilder::new()
+            .danger_accept_invalid_certs(true)
+            .build()?;
+
+        // * Set up the WebRTC client
         let mut rtc = Rtc::builder()
             .clear_codecs()
             .enable_h264(true)
@@ -34,7 +47,7 @@ impl Client {
             .set_reordering_size_audio(1)
             .build();
 
-        info!("local socket address: {:?}", socket.local_addr());
+        debug!("local socket address: {:?}", socket.local_addr());
 
         let candidate = Candidate::host(socket_addr, str0m::net::Protocol::Udp)
             .expect("Failed to create local candidate");
@@ -45,6 +58,7 @@ impl Client {
             rtc,
             pending: None,
             socket,
+            http_client,
         })
     }
 
@@ -61,6 +75,25 @@ impl Client {
         self.pending = Some(pending);
 
         Ok(offer)
+    }
+
+    pub fn send_offer(&mut self) -> Result<SdpMessageType, Error> {
+        // TODO (future): Will likely need to be updated to accept input of the server's address
+        let base_url = format!("https://{}:3000", get_host_ip_address());
+
+        // * Make a GET request to the server to get the offer.
+        let signal_url = format!("{}/offer", base_url);
+        let res = self.http_client.get(signal_url).send().await?;
+
+        // Deserialize the client ID and SdpOffer.
+        let exchange = res
+            .json::<SdpExchange>()
+            .await
+            .expect("offer to be deserialized");
+        let client_id = exchange.client_id;
+        let sdp_message = exchange.sdp_payload;
+
+        Ok(sdp_message)
     }
 
     pub fn create_answer(&mut self, offer: SdpOffer) -> Result<SdpAnswer, RtcError> {
