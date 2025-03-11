@@ -1,12 +1,5 @@
 use anyhow::Error;
-// TODO: this is silly. Should this be declared in lib.rs?
-use client::client::Client;
-use reqwest::{self, ClientBuilder};
-use signaling::{
-    message::{SdpExchange, SdpMessageType},
-    util::{logging::init_log, network::get_host_ip_address},
-    WebRtcEvent,
-};
+use signaling::{client::Client, message::SdpMessageType, util::logging::init_log, WebRtcEvent};
 use tracing::info;
 
 #[tokio::main]
@@ -20,15 +13,7 @@ async fn main() -> Result<(), Error> {
     match sdp_message {
         SdpMessageType::SdpOffer(offer) => {
             // * Create an SDP Answer.
-            let answer = client.create_answer(offer).expect("answer to be created");
-
-            // * Send the answer back to the server
-            let answer = SdpExchange {
-                client_id,
-                sdp_payload: SdpMessageType::SdpAnswer(answer),
-            };
-            let answer_url = format!("{}/answer", base_url);
-            let _ = http_client.post(answer_url).json(&answer).send().await?;
+            client.create_answer(offer).expect("answer to be created");
         }
         SdpMessageType::SdpAnswer(_) => panic!("Expected an offer"),
     }
