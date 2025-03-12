@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 die() {
   echo "$1" 1>&2
@@ -6,7 +6,7 @@ die() {
 }
 
 # Determine the script's directory
-script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" ||
+script_dir="$(cd "$(dirname "${0}")" && pwd)" ||
   die "Couldn't determine the script's running directory, which probably matters, bailing out" 1
 
 # Check for openssl
