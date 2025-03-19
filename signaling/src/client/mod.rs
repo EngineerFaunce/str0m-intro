@@ -29,7 +29,7 @@ pub struct Pending;
 pub struct Connected;
 
 #[derive(Debug)]
-pub struct RtcClient<ConnectionState = Disconnected> {
+pub struct Client<ConnectionState = Disconnected> {
     pub id: Uuid,
     rtc: Rtc,
     socket: UdpSocket,
@@ -38,8 +38,8 @@ pub struct RtcClient<ConnectionState = Disconnected> {
     state: PhantomData<ConnectionState>,
 }
 
-impl RtcClient<Disconnected> {
-    pub fn create_offer(mut self) -> Result<(SdpOffer, RtcClient<Pending>), RtcError> {
+impl Client<Disconnected> {
+    pub fn create_offer(mut self) -> Result<(SdpOffer, Client<Pending>), RtcError> {
         let mut change = self.rtc.sdp_api();
         let _mid = change.add_media(
             str0m::media::MediaKind::Video,
@@ -49,7 +49,7 @@ impl RtcClient<Disconnected> {
         );
         let (offer, pending) = change.apply().unwrap();
 
-        let pending_client: RtcClient<Pending> = RtcClient {
+        let pending_client: Client<Pending> = Client {
             id: self.id,
             rtc: self.rtc,
             socket: self.socket.try_clone().expect("Failed to clone socket"),
@@ -61,7 +61,7 @@ impl RtcClient<Disconnected> {
         Ok((offer, pending_client))
     }
 
-    pub async fn get_offer(self) -> Result<(SdpMessageType, RtcClient<Pending>), Error> {
+    pub async fn get_offer(self) -> Result<(SdpMessageType, Client<Pending>), Error> {
         // TODO (future): Will likely need to be updated to accept input of the server's address
         let base_url = format!("https://{}:3000", get_host_ip_address());
 
@@ -79,7 +79,7 @@ impl RtcClient<Disconnected> {
         // let client_id = exchange.client_id;
         let sdp_message = exchange.sdp_payload;
 
-        let pending_client: RtcClient<Pending> = RtcClient {
+        let pending_client: Client<Pending> = Client {
             id: self.id,
             rtc: self.rtc,
             socket: self.socket.try_clone().expect("Failed to clone socket"),
@@ -92,8 +92,8 @@ impl RtcClient<Disconnected> {
     }
 }
 
-impl RtcClient<Pending> {
-    pub async fn accept_offer(mut self, offer: SdpOffer) -> Result<RtcClient<Connected>, Error> {
+impl Client<Pending> {
+    pub async fn accept_offer(mut self, offer: SdpOffer) -> Result<Client<Connected>, Error> {
         let answer = self
             .rtc
             .sdp_api()
@@ -115,7 +115,7 @@ impl RtcClient<Pending> {
             .send()
             .await?;
 
-        let connected_client: RtcClient<Connected> = RtcClient {
+        let connected_client: Client<Connected> = Client {
             id: self.id,
             rtc: self.rtc,
             socket: self.socket.try_clone().expect("Failed to clone socket"),
@@ -127,13 +127,13 @@ impl RtcClient<Pending> {
         Ok(connected_client)
     }
 
-    pub fn accept_answer(mut self, answer: SdpAnswer) -> Result<RtcClient<Connected>, RtcError> {
+    pub fn accept_answer(mut self, answer: SdpAnswer) -> Result<Client<Connected>, RtcError> {
         let _ = self
             .rtc
             .sdp_api()
             .accept_answer(self.pending.take().unwrap(), answer);
 
-        let connected_client: RtcClient<Connected> = RtcClient {
+        let connected_client: Client<Connected> = Client {
             id: self.id,
             rtc: self.rtc,
             socket: self.socket.try_clone().expect("Failed to clone socket"),
@@ -146,7 +146,7 @@ impl RtcClient<Pending> {
     }
 }
 
-impl RtcClient<Connected> {
+impl Client<Connected> {
     pub fn recv(&mut self) -> Result<WebRtcEvent, RtcError> {
         if !self.rtc.is_alive() {
             return Ok(WebRtcEvent::Disconnected);
@@ -215,7 +215,7 @@ impl RtcClient<Connected> {
     }
 }
 
-impl RtcClient {
+impl Client {
     pub fn new() -> Result<Self, RtcError> {
         // * Set up the http client
         let http_client = match ClientBuilder::new()

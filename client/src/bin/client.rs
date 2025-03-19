@@ -1,6 +1,6 @@
 use anyhow::Error;
 use signaling::{
-    client::{Disconnected, RtcClient},
+    client::{Client, Disconnected},
     message::SdpMessageType,
     WebRtcEvent,
 };
@@ -8,7 +8,7 @@ use tracing::info;
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
-    let client: RtcClient<Disconnected> = RtcClient::new().expect("Failed to create client");
+    let client: Client<Disconnected> = Client::new().expect("Failed to create client");
 
     let (sdp_message, client) = client.get_offer().await?;
 

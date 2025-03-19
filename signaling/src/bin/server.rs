@@ -1,6 +1,6 @@
 use core::panic;
 use rouille::{Request, Response, Server};
-use signaling::client::{Pending, RtcClient};
+use signaling::client::{Client, Pending};
 use signaling::message::{SdpExchange, SdpMessageType};
 use signaling::util::logging::init_log;
 use signaling::WebRtcEvent;
@@ -12,7 +12,7 @@ use tracing::info;
 use uuid::Uuid;
 
 enum Signal {
-    Offer(RtcClient<Pending>),
+    Offer(Client<Pending>),
     Answer(AnswerSignal),
 }
 
@@ -55,7 +55,7 @@ fn web_request(request: &Request, tx: SyncSender<Signal>) -> Response {
 
     // * This is one half of the signaling process where we create an offer and send it to the client.
     if request.url() == "/offer" && request.method() == "GET" {
-        let mut client = RtcClient::new().expect("Failed to create client");
+        let mut client = Client::new().expect("Failed to create client");
 
         let (offer, client) = client.create_offer().expect("offer to be created");
 
@@ -95,7 +95,7 @@ fn web_request(request: &Request, tx: SyncSender<Signal>) -> Response {
 
 /// SFU server to process clients.
 fn process_clients(rx: Receiver<Signal>) {
-    let mut pending_clients: HashMap<Uuid, RtcClient<Pending>> = HashMap::new();
+    let mut pending_clients: HashMap<Uuid, Client<Pending>> = HashMap::new();
 
     loop {
         match rx.try_recv() {
