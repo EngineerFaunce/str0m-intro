@@ -1,18 +1,18 @@
 use core::panic;
 use rouille::{Request, Response, Server};
-use signaling::client::Client;
+use signaling::client::{Pending, RtcClient};
 use signaling::message::{SdpExchange, SdpMessageType};
 use signaling::util::logging::init_log;
 use signaling::WebRtcEvent;
 use std::collections::HashMap;
 use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError};
 use std::{io::Read, thread};
-use str0m::change::{SdpAnswer, SdpOffer};
+use str0m::change::SdpAnswer;
 use tracing::info;
 use uuid::Uuid;
 
 enum Signal {
-    Offer(Client),
+    Offer(RtcClient<Pending>),
     Answer(AnswerSignal),
 }
 
@@ -55,8 +55,9 @@ fn web_request(request: &Request, tx: SyncSender<Signal>) -> Response {
 
     // * This is one half of the signaling process where we create an offer and send it to the client.
     if request.url() == "/offer" && request.method() == "GET" {
-        let mut client = Client::new().expect("Failed to create client");
-        let offer: SdpOffer = client.create_offer().expect("offer to be created");
+        let mut client = RtcClient::new().expect("Failed to create client");
+
+        let (offer, client) = client.create_offer().expect("offer to be created");
 
         let response = SdpExchange {
             client_id: client.id,
@@ -77,7 +78,7 @@ fn web_request(request: &Request, tx: SyncSender<Signal>) -> Response {
         let exchange: SdpExchange = serde_json::from_slice(&buf).expect("data to be deserialized");
 
         match exchange.sdp_payload {
-            SdpMessageType::SdpOffer(_) => panic!("Expected an answer"),
+            SdpMessageType::SdpOffer(_) => panic!("Expected an answer, but got an offer."),
             SdpMessageType::SdpAnswer(answer) => {
                 let answer = AnswerSignal {
                     id: exchange.client_id,
@@ -94,7 +95,7 @@ fn web_request(request: &Request, tx: SyncSender<Signal>) -> Response {
 
 /// SFU server to process clients.
 fn process_clients(rx: Receiver<Signal>) {
-    let mut pending_clients: HashMap<Uuid, Client> = HashMap::new();
+    let mut pending_clients: HashMap<Uuid, RtcClient<Pending>> = HashMap::new();
 
     loop {
         match rx.try_recv() {
@@ -107,8 +108,8 @@ fn process_clients(rx: Receiver<Signal>) {
 
                 // Accept the answer
                 // TODO: error handling
-                let mut client = pending_clients.remove(&answer.id).unwrap();
-                client
+                let client = pending_clients.remove(&answer.id).unwrap();
+                let mut client = client
                     .accept_answer(answer.answer)
                     .expect("answer to be accepted");
 
