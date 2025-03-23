@@ -38,6 +38,19 @@ pub struct Client<ConnectionState = Disconnected> {
     state: PhantomData<ConnectionState>,
 }
 
+impl<T> Client<T> {
+    fn transition<State>(self) -> Client<State> {
+        Client::<State> {
+            id: self.id,
+            rtc: self.rtc,
+            socket: self.socket,
+            pending: self.pending,
+            http_client: self.http_client,
+            state: PhantomData,
+        }
+    }
+}
+
 impl Client<Disconnected> {
     pub fn create_offer(mut self) -> Result<(SdpOffer, Client<Pending>), RtcError> {
         let mut change = self.rtc.sdp_api();
@@ -49,16 +62,7 @@ impl Client<Disconnected> {
         );
         let (offer, pending) = change.apply().unwrap();
 
-        let pending_client: Client<Pending> = Client {
-            id: self.id,
-            rtc: self.rtc,
-            socket: self.socket.try_clone().expect("Failed to clone socket"),
-            pending: Some(pending),
-            http_client: self.http_client.clone(),
-            state: PhantomData,
-        };
-
-        Ok((offer, pending_client))
+        Ok((offer, self.transition()))
     }
 
     pub async fn get_offer(self) -> Result<(SdpMessageType, Client<Pending>), Error> {
@@ -79,16 +83,7 @@ impl Client<Disconnected> {
         // let client_id = exchange.client_id;
         let sdp_message = exchange.sdp_payload;
 
-        let pending_client: Client<Pending> = Client {
-            id: self.id,
-            rtc: self.rtc,
-            socket: self.socket.try_clone().expect("Failed to clone socket"),
-            pending: None,
-            http_client: self.http_client.clone(),
-            state: PhantomData,
-        };
-
-        Ok((sdp_message, pending_client))
+        Ok((sdp_message, self.transition()))
     }
 }
 
@@ -115,16 +110,7 @@ impl Client<Pending> {
             .send()
             .await?;
 
-        let connected_client: Client<Connected> = Client {
-            id: self.id,
-            rtc: self.rtc,
-            socket: self.socket.try_clone().expect("Failed to clone socket"),
-            pending: None,
-            http_client: self.http_client.clone(),
-            state: PhantomData,
-        };
-
-        Ok(connected_client)
+        Ok(self.transition())
     }
 
     pub fn accept_answer(mut self, answer: SdpAnswer) -> Result<Client<Connected>, RtcError> {
@@ -133,16 +119,7 @@ impl Client<Pending> {
             .sdp_api()
             .accept_answer(self.pending.take().unwrap(), answer);
 
-        let connected_client: Client<Connected> = Client {
-            id: self.id,
-            rtc: self.rtc,
-            socket: self.socket.try_clone().expect("Failed to clone socket"),
-            pending: None,
-            http_client: self.http_client.clone(),
-            state: PhantomData,
-        };
-
-        Ok(connected_client)
+        Ok(self.transition())
     }
 }
 
