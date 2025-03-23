@@ -24,6 +24,7 @@ use uuid::Uuid;
 /// Initial - The client has been created but no offer has been created
 /// Pending - The client has created an offer and is waiting for a response
 /// Connected - The client has received an answer and is connected
+// TODO: don't do this. It can be done without the need for separate structs
 pub struct Disconnected;
 pub struct Pending;
 pub struct Connected;
@@ -31,7 +32,7 @@ pub struct Connected;
 #[derive(Debug)]
 pub struct Client<ConnectionState = Disconnected> {
     pub id: Uuid,
-    rtc: Rtc,
+    pub rtc: Rtc,
     socket: UdpSocket,
     pending: Option<SdpPendingOffer>,
     http_client: reqwest::Client,
@@ -52,6 +53,7 @@ impl<T> Client<T> {
 }
 
 impl Client<Disconnected> {
+    /// Create an SdpOffer and return the client in the Pending state.
     pub fn create_offer(mut self) -> Result<(SdpOffer, Client<Pending>), RtcError> {
         let mut change = self.rtc.sdp_api();
         let _mid = change.add_media(
@@ -65,11 +67,11 @@ impl Client<Disconnected> {
         Ok((offer, self.transition()))
     }
 
+    /// Make a GET request to the server to receive an offer.
     pub async fn get_offer(self) -> Result<(SdpMessageType, Client<Pending>), Error> {
         // TODO (future): Will likely need to be updated to accept input of the server's address
         let base_url = format!("https://{}:3000", get_host_ip_address());
 
-        // * Make a GET request to the server to get the offer.
         let signal_url = format!("{}/offer", base_url);
         let res = self.http_client.get(signal_url).send().await?;
 
@@ -124,71 +126,9 @@ impl Client<Pending> {
 }
 
 impl Client<Connected> {
+    // TODO: break this up like in the chat example
     pub fn recv(&mut self) -> Result<WebRtcEvent, RtcError> {
-        if !self.rtc.is_alive() {
-            return Ok(WebRtcEvent::Disconnected);
-        }
-
-        // Poll output until we get a timeout. The timeout means we are either awaiting UDP socket input
-        // or the timeout to happen.
-        let timeout = match self.rtc.poll_output()? {
-            Output::Event(event) => match event {
-                Event::Connected => {
-                    info!("connected");
-                    return Ok(WebRtcEvent::Continue);
-                }
-                Event::IceConnectionStateChange(state) => {
-                    info!("ice connection state change: {:?}", state);
-                    return Ok(WebRtcEvent::Continue);
-                }
-                // TODO: handle other events, such as incoming media data.
-                _ => {
-                    return Ok(WebRtcEvent::Continue);
-                }
-            },
-            Output::Timeout(timeout) => timeout,
-            Output::Transmit(send) => {
-                self.socket.send_to(&send.contents, send.destination)?;
-                return Ok(WebRtcEvent::Continue);
-            }
-        };
-
-        let duration = timeout - Instant::now();
-
-        if duration.is_zero() {
-            // Drive time forwards in rtc straight away.
-            self.rtc.handle_input(Input::Timeout(Instant::now()))?;
-            return Ok(WebRtcEvent::Continue);
-        }
-
-        self.socket.set_read_timeout(Some(duration))?;
-
-        let mut buf = vec![0; 1500];
-        let input = match self.socket.recv_from(&mut buf) {
-            Ok((n, source)) => {
-                // UDP data received.
-                buf.truncate(n);
-                Input::Receive(
-                    Instant::now(),
-                    Receive {
-                        proto: Protocol::Udp,
-                        source,
-                        destination: self.socket.local_addr().unwrap(),
-                        contents: buf.as_slice().try_into()?,
-                    },
-                )
-            }
-
-            Err(e) => match e.kind() {
-                // Expected error for set_read_timeout(). One for windows, one for the rest.
-                ErrorKind::WouldBlock | ErrorKind::TimedOut => Input::Timeout(Instant::now()),
-                _ => return Err(e.into()),
-            },
-        };
-
-        self.rtc.handle_input(input)?;
-
-        return Ok(WebRtcEvent::Continue);
+        todo!()
     }
 }
 

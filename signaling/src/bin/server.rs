@@ -1,9 +1,8 @@
 use core::panic;
 use rouille::{Request, Response, Server};
-use signaling::client::{Client, Pending};
+use signaling::client::{Client, Connected, Pending};
 use signaling::message::{SdpExchange, SdpMessageType};
 use signaling::util::logging::init_log;
-use signaling::WebRtcEvent;
 use std::collections::HashMap;
 use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError};
 use std::{io::Read, thread};
@@ -11,7 +10,7 @@ use str0m::change::SdpAnswer;
 use tracing::info;
 use uuid::Uuid;
 
-enum Signal {
+enum SignalMessage {
     Offer(Client<Pending>),
     Answer(AnswerSignal),
 }
@@ -29,10 +28,10 @@ pub fn main() {
 
     // ? tx = transmission
     // ? rx = receiving
-    let (tx, rx): (SyncSender<Signal>, Receiver<Signal>) = mpsc::sync_channel(1);
+    let (tx, rx): (SyncSender<SignalMessage>, Receiver<SignalMessage>) = mpsc::sync_channel(1);
 
     // Separate thread to process clients as offers are made/accepted.
-    thread::spawn(move || process_clients(rx));
+    thread::spawn(move || run(rx));
 
     let server = Server::new_ssl(
         "0.0.0.0:3000",
@@ -46,7 +45,7 @@ pub fn main() {
 }
 
 // Handle a web request.
-fn web_request(request: &Request, tx: SyncSender<Signal>) -> Response {
+fn web_request(request: &Request, tx: SyncSender<SignalMessage>) -> Response {
     // ? This is just for debugging purposes.
     if request.url() == "/health" && request.method() == "GET" {
         info!("Received request from: {:?}", request.remote_addr());
@@ -55,7 +54,7 @@ fn web_request(request: &Request, tx: SyncSender<Signal>) -> Response {
 
     // * This is one half of the signaling process where we create an offer and send it to the client.
     if request.url() == "/offer" && request.method() == "GET" {
-        let mut client = Client::new().expect("Failed to create client");
+        let client = Client::new().expect("Failed to create client");
 
         let (offer, client) = client.create_offer().expect("offer to be created");
 
@@ -64,7 +63,8 @@ fn web_request(request: &Request, tx: SyncSender<Signal>) -> Response {
             sdp_payload: SdpMessageType::SdpOffer(offer),
         };
 
-        tx.send(Signal::Offer(client)).expect("client to be sent");
+        tx.send(SignalMessage::Offer(client))
+            .expect("client to be sent");
 
         return Response::json(&response);
     }
@@ -84,7 +84,8 @@ fn web_request(request: &Request, tx: SyncSender<Signal>) -> Response {
                     id: exchange.client_id,
                     answer,
                 };
-                tx.send(Signal::Answer(answer)).expect("answer to be sent");
+                tx.send(SignalMessage::Answer(answer))
+                    .expect("answer to be sent");
             }
         }
 
@@ -93,46 +94,37 @@ fn web_request(request: &Request, tx: SyncSender<Signal>) -> Response {
     Response::empty_404()
 }
 
-/// SFU server to process clients.
-fn process_clients(rx: Receiver<Signal>) {
+fn run(rx: Receiver<SignalMessage>) {
     let mut pending_clients: HashMap<Uuid, Client<Pending>> = HashMap::new();
+    let mut clients: HashMap<Uuid, Client<Connected>> = HashMap::new();
 
     loop {
+        // Remove disconnected clients.
+        clients.retain(|_, c| c.rtc.is_alive());
+
         match rx.try_recv() {
-            Ok(Signal::Offer(client)) => {
+            Ok(SignalMessage::Offer(client)) => {
                 info!("Sent offer to client: {:?}", client.id);
                 pending_clients.insert(client.id, client);
             }
-            Ok(Signal::Answer(answer)) => {
+            Ok(SignalMessage::Answer(answer)) => {
                 info!("Received answer from client: {:?}", answer.id);
 
                 // Accept the answer
                 // TODO: error handling
                 let client = pending_clients.remove(&answer.id).unwrap();
-                let mut client = client
+                let client = client
                     .accept_answer(answer.answer)
                     .expect("answer to be accepted");
-
-                // Start polling the client for incoming data.
-                thread::spawn(move || loop {
-                    let event = client.recv();
-                    match event {
-                        Ok(WebRtcEvent::Continue) => {}
-                        Ok(WebRtcEvent::Disconnected) => {
-                            break;
-                        }
-                        Err(_e) => {
-                            break;
-                        }
-                    }
-                });
+                clients.insert(client.id, client);
             }
-            Err(TryRecvError::Empty) => {
-                // info!("No client received");
-            }
+            Err(TryRecvError::Empty) => {}
             Err(TryRecvError::Disconnected) => {
-                info!("Channel disconnected");
+                panic!("Channel disconnected");
             }
-        }
+        };
+
+        // TODO: start polling clients
+        // TODO: propagate changes to other clients
     }
 }
