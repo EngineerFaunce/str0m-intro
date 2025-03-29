@@ -2,7 +2,6 @@ use core::panic;
 use rouille::{Request, Response, Server};
 use signaling::client::{Client, Connected, Pending};
 use signaling::message::{SdpExchange, SdpMessageType};
-use signaling::util::logging::init_log;
 use std::collections::HashMap;
 use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError};
 use std::{io::Read, thread};
@@ -20,8 +19,9 @@ struct AnswerSignal {
     answer: SdpAnswer,
 }
 
-pub fn main() {
-    init_log();
+    tracing_subscriber::registry()
+        .with(tracing_subscriber::fmt::layer())
+        .init();
 
     let certificate = include_bytes!("../certs/cer.pem").to_vec();
     let private_key = include_bytes!("../certs/key.pem").to_vec();
