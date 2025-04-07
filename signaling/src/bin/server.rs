@@ -4,7 +4,7 @@ use axum::{response::IntoResponse, routing::get, Router};
 use axum_server::tls_rustls::RustlsConfig;
 use core::panic;
 use reqwest::StatusCode;
-use signaling::client::{Client, Connected, Pending};
+use signaling::client::{Client, Connected};
 use std::net::SocketAddr;
 use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError};
 use std::thread;
@@ -12,9 +12,7 @@ use std::time::Duration;
 use std::{collections::HashMap, path::PathBuf};
 use str0m::change::{SdpAnswer, SdpOffer};
 use tokio::signal;
-use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
-use uuid::Uuid;
 
 #[derive(Clone, Copy)]
 struct Ports {
@@ -110,11 +108,14 @@ async fn health() -> impl IntoResponse {
 }
 
 /// WHIP endpoint
-async fn whip(Json(payload): Json<SdpOffer>) -> Json<SdpAnswer> {
+async fn whip(Json(payload): Json<SdpOffer>) -> String {
     let client = Client::new().expect("Failed to create client");
 
-    // TODO: create an answer and send it back
-    todo!()
+    let (client, answer) = client.accept_whip_request(payload).await.unwrap();
+
+    // TODO: what to do with client?
+
+    answer
 }
 
 /// WHEP endpoint
