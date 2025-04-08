@@ -1,5 +1,7 @@
+use anyhow::Error;
 use reqwest::header::{HeaderValue, ACCEPT};
 use reqwest::{header::CONTENT_TYPE, ClientBuilder};
+use std::path::PathBuf;
 use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket},
     time::Duration,
@@ -8,7 +10,9 @@ use str0m::{
     change::{SdpAnswer, SdpOffer},
     Candidate, Rtc, RtcError,
 };
-use tracing::debug;
+use tokio::fs::File;
+use tokio::io::AsyncReadExt;
+use tracing::{debug, info};
 use uuid::Uuid;
 
 #[derive(Debug)]
@@ -19,7 +23,7 @@ pub struct Client {
 }
 
 impl Client {
-    pub async fn make_whip_request(&mut self) -> Result<(), reqwest::Error> {
+    pub async fn make_whip_request(&mut self) -> Result<(), Error> {
         // WHIP client creates the offer
         let mut change = self.rtc.sdp_api();
         let _mid = change.add_media(
@@ -38,8 +42,17 @@ impl Client {
         );
         headers.append(ACCEPT, HeaderValue::from_str("application/sdp").unwrap());
 
+        let mut buf = Vec::new();
+        // TODO: should the certificate and key be moved to a more central location?
+        let temp = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("self_signed_certs")
+            .join("cer.pem");
+        info!("Path: {:?}", temp);
+        let _ = File::open(temp).await?.read_to_end(&mut buf);
+        let cert = reqwest::Certificate::from_pem(&buf)?;
         let http_client = ClientBuilder::new()
             .default_headers(headers)
+            .add_root_certificate(cert)
             .build()
             .unwrap();
 
