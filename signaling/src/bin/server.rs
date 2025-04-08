@@ -1,3 +1,4 @@
+use axum::response::Response;
 use axum::routing::post;
 use axum::Json;
 use axum::{response::IntoResponse, routing::get, Router};
@@ -108,14 +109,18 @@ async fn health() -> impl IntoResponse {
 }
 
 /// WHIP endpoint
-async fn whip(Json(payload): Json<SdpOffer>) -> String {
+async fn whip(Json(payload): Json<SdpOffer>) -> Response<String> {
     let client = Client::new().expect("Failed to create client");
 
     let (client, answer) = client.accept_whip_request(payload).await.unwrap();
 
     // TODO: what to do with client?
 
-    answer
+    Response::builder()
+        .status(201)
+        .header("Location", "/")
+        .body(answer)
+        .unwrap()
 }
 
 /// WHEP endpoint

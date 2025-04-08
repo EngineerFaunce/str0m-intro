@@ -5,5 +5,7 @@ use signaling::client::{Client, Disconnected};
 async fn main() -> Result<(), Error> {
     let client: Client<Disconnected> = Client::new().expect("Failed to create client");
 
+    client.make_whip_request().await?;
+
     Ok(())
 }

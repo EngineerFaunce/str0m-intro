@@ -1,4 +1,3 @@
-use crate::util::network::get_host_ip_address;
 use reqwest::header::{HeaderValue, ACCEPT};
 use reqwest::{header::CONTENT_TYPE, ClientBuilder};
 use std::{
@@ -60,26 +59,27 @@ impl Client<Disconnected> {
         headers.append(ACCEPT, HeaderValue::from_str("application/sdp").unwrap());
 
         let http_client = ClientBuilder::new()
-            // .danger_accept_invalid_certs(true)
             .default_headers(headers)
             .build()
             .unwrap();
 
         // TODO (future): Will likely need to be updated to accept input of the server's address
-        let base_url = format!("https://{}:3000", get_host_ip_address());
+        let base_url = "https://127.0.0.1:3000";
         let signal_url = format!("{}/whip", base_url);
 
         // WHIP client makes a POST request to the WHIP endpoint
         // WHIP endpoint responds with a 201 and SDP answer in the body
-        let answer: SdpAnswer = http_client
+        let answer_string = http_client
             .post(signal_url)
             .json(&offer)
             .send()
             .await?
-            .json()
+            .text()
             .await?;
 
-        let _ = self.rtc.sdp_api().accept_answer(pending, answer);
+        let answer = SdpAnswer::from_sdp_string(answer_string.as_str()).unwrap();
+
+        self.rtc.sdp_api().accept_answer(pending, answer).unwrap();
 
         Ok(())
     }
