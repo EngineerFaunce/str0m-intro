@@ -64,8 +64,6 @@ async fn main() {
         .route("/whip", post(whip));
 
     // run https server
-    // let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
-    // println!("Listening on: {}", listener.local_addr().unwrap());
     let addr = SocketAddr::from(([127, 0, 0, 1], ports.https));
     tracing::debug!("listening on {addr}");
     axum_server::bind_rustls(addr, config)
