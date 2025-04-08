@@ -5,7 +5,7 @@ use axum::{response::IntoResponse, routing::get, Router};
 use axum_server::tls_rustls::RustlsConfig;
 use core::panic;
 use reqwest::StatusCode;
-use signaling::client::{Client, Connected};
+use signaling::client::Client;
 use std::net::SocketAddr;
 use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError};
 use std::thread;
@@ -110,11 +110,9 @@ async fn health() -> impl IntoResponse {
 
 /// WHIP endpoint
 async fn whip(Json(payload): Json<SdpOffer>) -> Response<String> {
-    let client = Client::new().expect("Failed to create client");
+    let mut client = Client::new().expect("Failed to create client");
 
-    let (client, answer) = client.accept_whip_request(payload).await.unwrap();
-
-    // TODO: what to do with client?
+    let answer = client.accept_whip_request(payload).await.unwrap();
 
     Response::builder()
         .status(201)

@@ -1,7 +1,6 @@
 use reqwest::header::{HeaderValue, ACCEPT};
 use reqwest::{header::CONTENT_TYPE, ClientBuilder};
 use std::{
-    marker::PhantomData,
     net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket},
     time::Duration,
 };
@@ -12,34 +11,15 @@ use str0m::{
 use tracing::debug;
 use uuid::Uuid;
 
-/// The states of the Rtc client
-/// Initial - The client has been created but no offer has been created
-/// Connected - The client has received an answer and is connected
-// TODO: don't do this. It can be done without the need for separate structs
-pub struct Disconnected;
-pub struct Connected;
-
 #[derive(Debug)]
-pub struct Client<ConnectionState = Disconnected> {
+pub struct Client {
     pub id: Uuid,
     pub rtc: Rtc,
     socket: UdpSocket,
-    state: PhantomData<ConnectionState>,
 }
 
-impl<T> Client<T> {
-    fn transition<State>(self) -> Client<State> {
-        Client::<State> {
-            id: self.id,
-            rtc: self.rtc,
-            socket: self.socket,
-            state: PhantomData,
-        }
-    }
-}
-
-impl Client<Disconnected> {
-    pub async fn make_whip_request(mut self) -> Result<(), reqwest::Error> {
+impl Client {
+    pub async fn make_whip_request(&mut self) -> Result<(), reqwest::Error> {
         // WHIP client creates the offer
         let mut change = self.rtc.sdp_api();
         let _mid = change.add_media(
@@ -84,26 +64,16 @@ impl Client<Disconnected> {
         Ok(())
     }
 
-    pub async fn accept_whip_request(
-        mut self,
-        offer: SdpOffer,
-    ) -> Result<(Client<Connected>, String), RtcError> {
+    pub async fn accept_whip_request(&mut self, offer: SdpOffer) -> Result<String, RtcError> {
         let answer = self
             .rtc
             .sdp_api()
             .accept_offer(offer)
             .expect("offer to be accepted");
 
-        Ok((self.transition(), answer.to_sdp_string()))
+        Ok(answer.to_sdp_string())
     }
-}
 
-impl Client<Connected> {
-    // TODO: methods for ingress and egress
-    // TODO: method for disconnecting
-}
-
-impl Client {
     pub fn new() -> Result<Self, RtcError> {
         // * Set up the WebRTC client
         let mut rtc = Rtc::builder()
@@ -125,7 +95,6 @@ impl Client {
 
         Ok(Self {
             id: uuid::Uuid::new_v4(),
-            state: PhantomData,
             rtc,
             socket,
         })
