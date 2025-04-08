@@ -50,7 +50,7 @@ async fn main() {
     let config = RustlsConfig::from_pem_file(
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("self_signed_certs")
-            .join("cert.pem"),
+            .join("cer.pem"),
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("self_signed_certs")
             .join("key.pem"),
