@@ -3,7 +3,7 @@ use axum::http::uri::Authority;
 use axum::http::Uri;
 use axum::response::{Redirect, Response};
 use axum::routing::post;
-use axum::{response::IntoResponse, routing::get, Router};
+use axum::Router;
 use axum::{BoxError, Json};
 use axum_extra::extract::Host;
 use axum_server::tls_rustls::RustlsConfig;
@@ -66,7 +66,6 @@ async fn main() {
     .unwrap();
 
     let app = Router::new()
-        .route("/health", get(health))
         .route("/whip", post(whip))
         .route("/whep", post(whep));
 
@@ -78,6 +77,44 @@ async fn main() {
         .serve(app.into_make_service())
         .await
         .unwrap();
+}
+
+/// WHIP endpoint
+async fn whip(Json(payload): Json<SdpOffer>) -> Response<String> {
+    let mut client = Client::new().expect("Failed to create client");
+
+    let answer = client.accept_whip_request(payload).await.unwrap();
+
+    Response::builder()
+        .status(201)
+        .header("Location", "/")
+        .body(answer)
+        .unwrap()
+}
+
+/// WHEP endpoint
+async fn whep(Json(payload): Json<SdpOffer>) -> Json<SdpAnswer> {
+    todo!()
+}
+
+fn process_clients(rx: Receiver<Client>) {
+    let mut clients: Vec<Client> = Vec::new();
+
+    loop {
+        // Remove disconnected clients.
+        clients.retain(|c| c.rtc.is_alive());
+
+        match rx.try_recv() {
+            Ok(_) => todo!(),
+            Err(TryRecvError::Empty) => {}
+            Err(TryRecvError::Disconnected) => {
+                panic!("Channel disconnected");
+            }
+        };
+
+        // TODO: start polling clients
+        // TODO: propagate changes to other clients
+    }
 }
 
 async fn shutdown_signal(handle: axum_server::Handle) {
@@ -154,47 +191,4 @@ where
         .with_graceful_shutdown(signal)
         .await
         .unwrap();
-}
-
-// TODO: remove this. For debugging purposes only.
-async fn health() -> impl IntoResponse {
-    StatusCode::NO_CONTENT
-}
-
-/// WHIP endpoint
-async fn whip(Json(payload): Json<SdpOffer>) -> Response<String> {
-    let mut client = Client::new().expect("Failed to create client");
-
-    let answer = client.accept_whip_request(payload).await.unwrap();
-
-    Response::builder()
-        .status(201)
-        .header("Location", "/")
-        .body(answer)
-        .unwrap()
-}
-
-/// WHEP endpoint
-async fn whep(Json(payload): Json<SdpOffer>) -> Json<SdpAnswer> {
-    todo!()
-}
-
-fn process_clients(rx: Receiver<Client>) {
-    let mut clients: Vec<Client> = Vec::new();
-
-    loop {
-        // Remove disconnected clients.
-        clients.retain(|c| c.rtc.is_alive());
-
-        match rx.try_recv() {
-            Ok(_) => todo!(),
-            Err(TryRecvError::Empty) => {}
-            Err(TryRecvError::Disconnected) => {
-                panic!("Channel disconnected");
-            }
-        };
-
-        // TODO: start polling clients
-        // TODO: propagate changes to other clients
-    }
 }
