@@ -12,10 +12,10 @@ use reqwest::StatusCode;
 use signaling::client::Client;
 use std::future::Future;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError};
 use std::thread;
 use std::time::Duration;
-use std::{collections::HashMap, path::PathBuf};
 use str0m::change::{SdpAnswer, SdpOffer};
 use tokio::signal;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -45,12 +45,13 @@ async fn main() {
     // optional: spawn a second server to redirect http requests to this server
     tokio::spawn(redirect_http_to_https(ports, shutdown_future));
 
-    // ? tx = transmission
-    // ? rx = receiving
-    // let (tx, rx): (SyncSender<SignalMessage>, Receiver<SignalMessage>) = mpsc::sync_channel(1);
+    // ? tx = transmission (one or more)
+    // ? rx = receiving (singular)
+    let (tx, rx): (SyncSender<Client>, Receiver<Client>) = mpsc::sync_channel(1);
 
     // Separate thread to process clients as offers are made/accepted.
-    // thread::spawn(move || run(rx));
+    // TODO: switch this to tokio::spawn?
+    thread::spawn(move || process_clients(rx));
 
     // configure certificate and private key used by https
     let config = RustlsConfig::from_pem_file(
@@ -178,37 +179,22 @@ async fn whep(Json(payload): Json<SdpOffer>) -> Json<SdpAnswer> {
     todo!()
 }
 
-// fn run(rx: Receiver<SignalMessage>) {
-//     let mut pending_clients: HashMap<Uuid, Client<Pending>> = HashMap::new();
-//     let mut clients: HashMap<Uuid, Client<Connected>> = HashMap::new();
+fn process_clients(rx: Receiver<Client>) {
+    let mut clients: Vec<Client> = Vec::new();
 
-//     loop {
-//         // Remove disconnected clients.
-//         clients.retain(|_, c| c.rtc.is_alive());
+    loop {
+        // Remove disconnected clients.
+        clients.retain(|c| c.rtc.is_alive());
 
-//         match rx.try_recv() {
-//             Ok(SignalMessage::Offer(client)) => {
-//                 info!("Sent offer to client: {:?}", client.id);
-//                 pending_clients.insert(client.id, client);
-//             }
-//             Ok(SignalMessage::Answer(answer)) => {
-//                 info!("Received answer from client: {:?}", answer.id);
+        match rx.try_recv() {
+            Ok(_) => todo!(),
+            Err(TryRecvError::Empty) => {}
+            Err(TryRecvError::Disconnected) => {
+                panic!("Channel disconnected");
+            }
+        };
 
-//                 // Accept the answer
-//                 // TODO: error handling
-//                 let client = pending_clients.remove(&answer.id).unwrap();
-//                 let client = client
-//                     .accept_answer(answer.answer)
-//                     .expect("answer to be accepted");
-//                 clients.insert(client.id, client);
-//             }
-//             Err(TryRecvError::Empty) => {}
-//             Err(TryRecvError::Disconnected) => {
-//                 panic!("Channel disconnected");
-//             }
-//         };
-
-//         // TODO: start polling clients
-//         // TODO: propagate changes to other clients
-//     }
-// }
+        // TODO: start polling clients
+        // TODO: propagate changes to other clients
+    }
+}
