@@ -46,9 +46,10 @@ impl Client {
         // TODO: should the certificate and key be moved to a more central location?
         let temp = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("self_signed_certs")
-            .join("cer.pem");
-        info!("Path: {:?}", temp);
-        let _ = File::open(temp).await?.read_to_end(&mut buf);
+            .join("cert.pem");
+        let mut file = File::open(temp).await?;
+        let bytes_read = file.read_to_end(&mut buf).await?;
+        debug!("Read {:?} bytes from cert file.", bytes_read);
         let cert = reqwest::Certificate::from_pem(&buf)?;
         let http_client = ClientBuilder::new()
             .default_headers(headers)
