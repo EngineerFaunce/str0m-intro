@@ -13,11 +13,11 @@ use signaling::client::Client;
 use std::future::Future;
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError};
-use std::thread;
 use std::time::Duration;
 use str0m::change::{SdpAnswer, SdpOffer};
 use tokio::signal;
+use tokio::sync::mpsc::error::TryRecvError;
+use tokio::sync::mpsc::{self, Receiver, Sender};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[derive(Clone, Copy)]
@@ -47,11 +47,10 @@ async fn main() {
 
     // ? tx = transmission (one or more)
     // ? rx = receiving (singular)
-    let (tx, rx): (SyncSender<Client>, Receiver<Client>) = mpsc::sync_channel(1);
+    let (tx, mut rx): (Sender<Client>, Receiver<Client>) = mpsc::channel(1);
 
     // Separate thread to process clients as offers are made/accepted.
-    // TODO: switch this to tokio::spawn?
-    thread::spawn(move || process_clients(rx));
+    tokio::spawn(async move { process_clients(rx).await });
 
     // configure certificate and private key used by https
     let config = RustlsConfig::from_pem_file(
@@ -97,7 +96,7 @@ async fn whep(Json(payload): Json<SdpOffer>) -> Json<SdpAnswer> {
     todo!()
 }
 
-fn process_clients(rx: Receiver<Client>) {
+async fn process_clients(mut rx: Receiver<Client>) {
     let mut clients: Vec<Client> = Vec::new();
 
     loop {
