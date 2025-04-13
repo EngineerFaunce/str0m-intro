@@ -1,4 +1,6 @@
 use anyhow::Error;
+use anyhow::{anyhow, Result};
+use gstreamer::{self as gst, prelude::*};
 use reqwest::header::{HeaderValue, ACCEPT};
 use reqwest::{header::CONTENT_TYPE, ClientBuilder};
 use std::path::PathBuf;
@@ -112,5 +114,53 @@ impl Client {
             rtc,
             socket,
         })
+    }
+
+    pub fn stream_test_video(destination: SocketAddr) -> Result<()> {
+        gst::init()?;
+
+        let pipeline = gst::Pipeline::default();
+        let src = gst::ElementFactory::make("videotestsrc").build()?;
+        let conv = gst::ElementFactory::make("videoconvert").build()?;
+        let enc = gst::ElementFactory::make("x264enc")
+            .property_from_str("tune", "zerolatency")
+            .build()?;
+        let pay = gst::ElementFactory::make("rtph264pay").build()?;
+        let sink = gst::ElementFactory::make("udpsink")
+            .property("host", destination.ip().to_string())
+            .property("port", destination.port() as i32)
+            .build()?;
+
+        pipeline.add_many([&src, &conv, &enc, &pay, &sink])?;
+        gst::Element::link_many([&src, &conv, &enc, &pay, &sink])?;
+
+        let bus = pipeline.bus().unwrap();
+
+        pipeline.set_state(gst::State::Playing)?;
+
+        let pipeline_res = bus
+            .iter_timed(None)
+            .inspect(|msg| {
+                if let gst::MessageView::StateChanged(state) = msg.view() {
+                    if let Some(element) = msg.src() {
+                        if element == &pipeline && state.current() == gst::State::Playing {
+                            eprintln!("playing test video");
+                            pipeline
+                                .debug_to_dot_file(gst::DebugGraphDetails::all(), "server-playing");
+                        }
+                    }
+                }
+            })
+            .filter_map(|msg| match msg.view() {
+                gst::MessageView::Eos(..) => Some(Ok(())),
+                gst::MessageView::Error(err) => Some(Err(anyhow!("{err:?}"))),
+                _ => None,
+            })
+            .next()
+            .unwrap_or(Err(anyhow!("empty stream")));
+
+        pipeline.set_state(gst::State::Null)?;
+
+        pipeline_res
     }
 }
