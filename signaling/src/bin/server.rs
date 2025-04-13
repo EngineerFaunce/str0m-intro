@@ -1,3 +1,4 @@
+use axum::extract::State;
 use axum::handler::HandlerWithoutStateExt;
 use axum::http::uri::Authority;
 use axum::http::Uri;
@@ -10,20 +11,28 @@ use axum_server::tls_rustls::RustlsConfig;
 use core::panic;
 use reqwest::StatusCode;
 use signaling::client::Client;
+use std::collections::HashMap;
 use std::future::Future;
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 use str0m::change::{SdpAnswer, SdpOffer};
 use tokio::signal;
-use tokio::sync::mpsc::error::TryRecvError;
-use tokio::sync::mpsc::{self, Receiver, Sender};
+use tokio::sync::{Mutex, RwLock};
+use tracing::debug;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+use uuid::Uuid;
 
 #[derive(Clone, Copy)]
 struct Ports {
     http: u16,
     https: u16,
+}
+
+#[derive(Clone)]
+pub struct AppState {
+    pub clients: Arc<RwLock<HashMap<Uuid, Arc<Mutex<Client>>>>>,
 }
 
 #[tokio::main]
@@ -45,12 +54,12 @@ async fn main() {
     // optional: spawn a second server to redirect http requests to this server
     tokio::spawn(redirect_http_to_https(ports, shutdown_future));
 
-    // ? tx = transmission (one or more)
-    // ? rx = receiving (singular)
-    let (tx, mut rx): (Sender<Client>, Receiver<Client>) = mpsc::channel(1);
+    let state = AppState {
+        clients: Arc::new(RwLock::new(HashMap::new())),
+    };
 
-    // Separate thread to process clients as offers are made/accepted.
-    tokio::spawn(async move { process_clients(rx).await });
+    // Separate thread to process WHIP/WHEP clients
+    tokio::spawn(process_clients(state.clone()));
 
     // configure certificate and private key used by https
     let config = RustlsConfig::from_pem_file(
@@ -66,9 +75,9 @@ async fn main() {
 
     let app = Router::new()
         .route("/whip", post(whip))
+        .with_state(state)
         .route("/whep", post(whep));
 
-    // run https server
     let addr = SocketAddr::from(([127, 0, 0, 1], ports.https));
     tracing::debug!("listening on {addr}");
     axum_server::bind_rustls(addr, config)
@@ -79,10 +88,17 @@ async fn main() {
 }
 
 /// WHIP endpoint
-async fn whip(Json(payload): Json<SdpOffer>) -> Response<String> {
+async fn whip(State(state): State<AppState>, Json(payload): Json<SdpOffer>) -> Response<String> {
     let mut client = Client::new().expect("Failed to create client");
 
     let answer = client.accept_whip_request(payload).await.unwrap();
+
+    let client_id = Uuid::new_v4();
+    {
+        let mut clients = state.clients.write().await;
+        clients.insert(client_id, Arc::new(Mutex::new(client)));
+        debug!("New client: {:?}", client_id);
+    }
 
     Response::builder()
         .status(201)
@@ -96,23 +112,42 @@ async fn whep(Json(payload): Json<SdpOffer>) -> Json<SdpAnswer> {
     todo!()
 }
 
-async fn process_clients(mut rx: Receiver<Client>) {
-    let mut clients: Vec<Client> = Vec::new();
-
+async fn process_clients(state: AppState) {
     loop {
-        // Remove disconnected clients.
-        clients.retain(|c| c.rtc.is_alive());
+        {
+            let clients = state.clients.read().await;
+        }
 
-        match rx.try_recv() {
-            Ok(_) => todo!(),
-            Err(TryRecvError::Empty) => {}
-            Err(TryRecvError::Disconnected) => {
-                panic!("Channel disconnected");
-            }
-        };
+        remove_disconnected_clients(&state.clients).await;
 
         // TODO: start polling clients
         // TODO: propagate changes to other clients
+    }
+}
+
+/// Two-pass approach to removing disconnected clients
+async fn remove_disconnected_clients(
+    client_state: &Arc<RwLock<HashMap<Uuid, Arc<Mutex<Client>>>>>,
+) {
+    let mut targets = Vec::new();
+
+    let clients = client_state.read().await;
+
+    {
+        for (id, client) in clients.iter() {
+            let client = client.lock().await;
+            if !client.rtc.is_alive() {
+                targets.push(*id);
+            }
+        }
+    }
+
+    if !targets.is_empty() {
+        let mut clients = client_state.write().await;
+        for id in targets {
+            debug!("Pruning client: {id}");
+            clients.remove(&id);
+        }
     }
 }
 
