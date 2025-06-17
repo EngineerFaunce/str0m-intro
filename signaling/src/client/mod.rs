@@ -1,6 +1,7 @@
 use anyhow::Error;
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use gstreamer::{self as gst, prelude::*};
+use gstreamer_app::{AppSink, AppSinkCallbacks};
 use reqwest::header::{HeaderValue, ACCEPT};
 use reqwest::{header::CONTENT_TYPE, ClientBuilder};
 use std::path::PathBuf;
@@ -14,14 +15,15 @@ use str0m::{
 };
 use tokio::fs::File;
 use tokio::io::AsyncReadExt;
-use tracing::{debug, info};
+use tracing::debug;
+use tracing::info;
 use uuid::Uuid;
 
 #[derive(Debug)]
 pub struct Client {
     pub id: Uuid,
     pub rtc: Rtc,
-    socket: UdpSocket,
+    pub socket: UdpSocket,
 }
 
 impl Client {
@@ -116,51 +118,64 @@ impl Client {
         })
     }
 
-    pub fn stream_test_video(destination: SocketAddr) -> Result<()> {
+    pub fn stream_test_video(&self) -> Result<()> {
         gst::init()?;
 
         let pipeline = gst::Pipeline::default();
-        let src = gst::ElementFactory::make("videotestsrc").build()?;
+        let src = gst::ElementFactory::make("videotestsrc")
+            .property("is-live", true)
+            .property_from_str("pattern", "ball")
+            .build()?;
         let conv = gst::ElementFactory::make("videoconvert").build()?;
         let enc = gst::ElementFactory::make("x264enc")
             .property_from_str("tune", "zerolatency")
             .build()?;
         let pay = gst::ElementFactory::make("rtph264pay").build()?;
-        let sink = gst::ElementFactory::make("udpsink")
-            .property("host", destination.ip().to_string())
-            .property("port", destination.port() as i32)
+        let sink = gst::ElementFactory::make("appsink")
+            .property("emit-signals", true)
+            .property("sync", false)
             .build()?;
 
         pipeline.add_many([&src, &conv, &enc, &pay, &sink])?;
         gst::Element::link_many([&src, &conv, &enc, &pay, &sink])?;
 
-        let bus = pipeline.bus().unwrap();
+        let appsink = sink.clone().dynamic_cast::<AppSink>().unwrap();
 
+        appsink.set_callbacks(
+            AppSinkCallbacks::builder()
+                .new_sample(|sink| {
+                    let sample = sink.pull_sample().map_err(|_| gst::FlowError::Eos)?;
+                    let buffer = sample.buffer().ok_or(gst::FlowError::Error)?;
+                    let map = buffer.map_readable().map_err(|_| gst::FlowError::Error)?;
+                    let data = map.as_slice();
+
+                    info!("Got RTP packet: {} bytes", data.len());
+
+                    Ok(gstreamer::FlowSuccess::Ok)
+                })
+                .build(),
+        );
+
+        // TODO: control the pipeline state externally
         pipeline.set_state(gst::State::Playing)?;
 
-        let pipeline_res = bus
-            .iter_timed(None)
-            .inspect(|msg| {
-                if let gst::MessageView::StateChanged(state) = msg.view() {
-                    if let Some(element) = msg.src() {
-                        if element == &pipeline && state.current() == gst::State::Playing {
-                            eprintln!("playing test video");
-                            pipeline
-                                .debug_to_dot_file(gst::DebugGraphDetails::all(), "server-playing");
-                        }
-                    }
+        let bus = pipeline.bus().unwrap();
+
+        for msg in bus.iter_timed(gst::ClockTime::NONE) {
+            match msg.view() {
+                gst::MessageView::Eos(..) => break,
+                gst::MessageView::Error(err) => {
+                    eprintln!(
+                        "Pipeline error from {:?}: {}",
+                        err.src().map(|s| s.path_string()),
+                        err.error()
+                    );
+                    break;
                 }
-            })
-            .filter_map(|msg| match msg.view() {
-                gst::MessageView::Eos(..) => Some(Ok(())),
-                gst::MessageView::Error(err) => Some(Err(anyhow!("{err:?}"))),
-                _ => None,
-            })
-            .next()
-            .unwrap_or(Err(anyhow!("empty stream")));
+                _ => (),
+            }
+        }
 
-        pipeline.set_state(gst::State::Null)?;
-
-        pipeline_res
+        Ok(())
     }
 }

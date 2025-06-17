@@ -15,5 +15,7 @@ async fn main() -> Result<(), Error> {
 
     info!("Is the RTC alive? {:?}", client.rtc.is_alive());
 
+    let _ = client.stream_test_video();
+
     Ok(())
 }
