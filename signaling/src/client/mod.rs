@@ -95,11 +95,10 @@ impl Client {
     pub fn new() -> Result<Self, RtcError> {
         // * Set up the WebRTC client
         let mut rtc = Rtc::builder()
+            .set_rtp_mode(true)
             .clear_codecs()
             .enable_h264(true)
             .set_stats_interval(Some(Duration::from_secs(2)))
-            .set_reordering_size_video(1)
-            .set_reordering_size_audio(1)
             .build();
 
         let socket_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
