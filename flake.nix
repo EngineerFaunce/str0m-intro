@@ -21,6 +21,11 @@
           # Support the Video Audio (Hardware) Acceleration API
           gst_all_1.gst-vaapi
         ];
+        
+        # Make pkg-config able to find the .pc files
+        shellHook = ''
+          export PKG_CONFIG_PATH="${pkgs.glib.dev}/lib/pkgconfig:${pkgs.glib.out}/lib/pkgconfig:${pkgs.gst_all_1.gstreamer.dev}/lib/pkgconfig:${pkgs.gst_all_1.gst-plugins-base.dev}/lib/pkgconfig"
+        '';
       };
     };
 }
