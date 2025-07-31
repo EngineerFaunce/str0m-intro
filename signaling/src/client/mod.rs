@@ -5,11 +5,18 @@ use gstreamer_app::{AppSink, AppSinkCallbacks};
 use reqwest::header::{HeaderValue, ACCEPT};
 use reqwest::{header::CONTENT_TYPE, ClientBuilder};
 use std::path::PathBuf;
+use std::sync::mpsc;
+use std::sync::mpsc::Receiver;
+use std::sync::mpsc::Sender;
+use std::time::Instant;
 use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket},
     time::Duration,
 };
 use str0m::media::Mid;
+use str0m::media::Pt;
+use str0m::rtp::ExtensionValues;
+use str0m::rtp::SeqNo;
 use str0m::{
     change::{SdpAnswer, SdpOffer},
     Candidate, Rtc, RtcError,
@@ -119,7 +126,7 @@ impl Client {
         })
     }
 
-    pub fn stream_test_video(&self) -> Result<()> {
+    pub fn stream_test_video(&mut self) -> Result<()> {
         gst::init()?;
 
         let pipeline = gst::Pipeline::default();
@@ -140,22 +147,49 @@ impl Client {
         pipeline.add_many([&src, &conv, &enc, &pay, &sink])?;
         gst::Element::link_many([&src, &conv, &enc, &pay, &sink])?;
 
+        // Channel for RTP packets
+        let (tx, rx): (Sender<Vec<u8>>, Receiver<Vec<u8>>) = mpsc::channel();
+
         let appsink = sink.clone().dynamic_cast::<AppSink>().unwrap();
+
+        // TODO: wtf do I do here
+        let stream_tx = self
+            .rtc
+            .direct_api()
+            .stream_tx_by_mid(self.video_mid.unwrap(), None)
+            .unwrap();
 
         appsink.set_callbacks(
             AppSinkCallbacks::builder()
-                .new_sample(|sink| {
+                .new_sample(move |sink| {
                     let sample = sink.pull_sample().map_err(|_| gst::FlowError::Eos)?;
                     let buffer = sample.buffer().ok_or(gst::FlowError::Error)?;
                     let map = buffer.map_readable().map_err(|_| gst::FlowError::Error)?;
                     let data = map.as_slice();
+                    // info!("Got RTP packet: {} bytes", data.len());
 
-                    info!("Got RTP packet: {} bytes", data.len());
+                    tx.send(data.to_vec()).unwrap();
 
                     Ok(gstreamer::FlowSuccess::Ok)
                 })
                 .build(),
         );
+
+        // TODO: wtf do I do here
+        std::thread::spawn(move || {
+            while let Ok(packet) = rx.recv() {
+                stream_tx.write_rtp(
+                    Pt::new(),
+                    SeqNo::new(),
+                    90_0000,
+                    Instant::now(),
+                    false,
+                    ExtensionValues::default(),
+                    false,
+                    packet,
+                );
+            }
+        });
 
         // TODO: control the pipeline state externally
         pipeline.set_state(gst::State::Playing)?;
