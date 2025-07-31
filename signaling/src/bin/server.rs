@@ -16,8 +16,9 @@ use std::future::Future;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use str0m::change::{SdpAnswer, SdpOffer};
+use str0m::{Event, Output};
 use tokio::signal;
 use tokio::sync::{Mutex, RwLock};
 use tracing::debug;
@@ -115,39 +116,62 @@ async fn whep(Json(payload): Json<SdpOffer>) -> Json<SdpAnswer> {
 async fn process_clients(state: AppState) {
     loop {
         {
+            let mut targets = Vec::new();
+            {
+                let clients = state.clients.read().await;
+                for (id, client) in clients.iter() {
+                    let client = client.lock().await;
+                    if !client.rtc.is_alive() {
+                        targets.push(*id);
+                    }
+                }
+            }
+
+            {
+                if !targets.is_empty() {
+                    let mut clients = state.clients.write().await;
+                    for id in targets {
+                        debug!("Pruning client: {id}");
+                        clients.remove(&id);
+                    }
+                }
+            }
+
             let clients = state.clients.read().await;
-        }
+            // TODO: start polling clients
+            for (id, client) in clients.iter() {
+                let mut client = client.lock().await;
+                let timeout = match client.rtc.poll_output().unwrap() {
+                    Output::Timeout(timeout) => timeout,
+                    Output::Transmit(send) => {
+                        // TODO: transmit data to WHEP clients
+                        continue;
+                    }
+                    Output::Event(event) => match event {
+                        Event::Connected => {
+                            debug!("connected");
+                            return;
+                        }
+                        Event::MediaAdded(media) => {
+                            debug!("Media added: {:?}", media);
+                            return;
+                        }
+                        Event::MediaData(data) => {
+                            debug!("Media data: {:?}", data);
+                            return;
+                        }
+                        _ => {
+                            debug!("unhandled event: {:?}", event);
+                            return;
+                        }
+                    },
+                };
 
-        remove_disconnected_clients(&state.clients).await;
-
-        // TODO: start polling clients
-        // TODO: propagate changes to other clients
-    }
-}
-
-/// Two-pass approach to removing disconnected clients
-async fn remove_disconnected_clients(
-    client_state: &Arc<RwLock<HashMap<Uuid, Arc<Mutex<Client>>>>>,
-) {
-    let mut targets = Vec::new();
-
-    let clients = client_state.read().await;
-
-    {
-        for (id, client) in clients.iter() {
-            let client = client.lock().await;
-            if !client.rtc.is_alive() {
-                targets.push(*id);
+                let duration = timeout - Instant::now();
             }
         }
-    }
 
-    if !targets.is_empty() {
-        let mut clients = client_state.write().await;
-        for id in targets {
-            debug!("Pruning client: {id}");
-            clients.remove(&id);
-        }
+        // TODO: propagate changes to other clients
     }
 }
 
