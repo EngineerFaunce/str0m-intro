@@ -9,6 +9,7 @@ use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket},
     time::Duration,
 };
+use str0m::media::Mid;
 use str0m::{
     change::{SdpAnswer, SdpOffer},
     Candidate, Rtc, RtcError,
@@ -16,7 +17,6 @@ use str0m::{
 use tokio::fs::File;
 use tokio::io::AsyncReadExt;
 use tracing::debug;
-use tracing::info;
 use uuid::Uuid;
 
 #[derive(Debug)]
@@ -24,18 +24,19 @@ pub struct Client {
     pub id: Uuid,
     pub rtc: Rtc,
     pub socket: UdpSocket,
+    video_mid: Option<Mid>,
 }
 
 impl Client {
     pub async fn make_whip_request(&mut self) -> Result<(), Error> {
         // WHIP client creates the offer
         let mut change = self.rtc.sdp_api();
-        let _mid = change.add_media(
+        self.video_mid = Some(change.add_media(
             str0m::media::MediaKind::Video,
             str0m::media::Direction::SendOnly, // The offer *should* use the sendonly attribute
             None,
             None,
-        );
+        ));
         let (offer, pending) = change.apply().unwrap();
 
         // Set some default headers based on WHIP protocol
@@ -114,6 +115,7 @@ impl Client {
             id: uuid::Uuid::new_v4(),
             rtc,
             socket,
+            video_mid: None,
         })
     }
 
