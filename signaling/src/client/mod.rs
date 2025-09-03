@@ -35,6 +35,32 @@ pub struct Client {
 }
 
 impl Client {
+    pub fn new() -> Result<Self, RtcError> {
+        // * Set up the WebRTC client
+        let mut rtc = Rtc::builder()
+            .set_rtp_mode(true)
+            .clear_codecs()
+            .enable_h264(true)
+            .set_stats_interval(Some(Duration::from_secs(2)))
+            .build();
+
+        let socket_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
+        let socket = UdpSocket::bind(socket_addr).expect("Should bind udp socket");
+        debug!("local socket address: {:?}", socket.local_addr());
+
+        rtc.add_local_candidate(
+            Candidate::host(socket_addr, str0m::net::Protocol::Udp)
+                .expect("Failed to create local candidate"),
+        );
+
+        Ok(Self {
+            id: uuid::Uuid::new_v4(),
+            rtc,
+            socket,
+            video_mid: None,
+        })
+    }
+
     pub async fn make_whip_request(&mut self) -> Result<(), Error> {
         // WHIP client creates the offer
         let mut change = self.rtc.sdp_api();
@@ -98,32 +124,6 @@ impl Client {
             .expect("offer to be accepted");
 
         Ok(answer.to_sdp_string())
-    }
-
-    pub fn new() -> Result<Self, RtcError> {
-        // * Set up the WebRTC client
-        let mut rtc = Rtc::builder()
-            .set_rtp_mode(true)
-            .clear_codecs()
-            .enable_h264(true)
-            .set_stats_interval(Some(Duration::from_secs(2)))
-            .build();
-
-        let socket_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
-        let socket = UdpSocket::bind(socket_addr).expect("Should bind udp socket");
-        debug!("local socket address: {:?}", socket.local_addr());
-
-        rtc.add_local_candidate(
-            Candidate::host(socket_addr, str0m::net::Protocol::Udp)
-                .expect("Failed to create local candidate"),
-        );
-
-        Ok(Self {
-            id: uuid::Uuid::new_v4(),
-            rtc,
-            socket,
-            video_mid: None,
-        })
     }
 
     pub fn stream_test_video(&mut self) -> Result<()> {
