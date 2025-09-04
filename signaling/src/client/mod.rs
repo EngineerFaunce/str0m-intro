@@ -5,9 +5,10 @@ use gstreamer_app::{AppSink, AppSinkCallbacks};
 use reqwest::header::{HeaderValue, ACCEPT};
 use reqwest::{header::CONTENT_TYPE, ClientBuilder};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU16, AtomicU32, Ordering};
 use std::sync::mpsc;
-use std::sync::mpsc::Receiver;
-use std::sync::mpsc::Sender;
+use std::sync::mpsc::{Receiver, Sender};
+use std::sync::Arc;
 use std::time::Instant;
 use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket},
@@ -152,13 +153,6 @@ impl Client {
 
         let appsink = sink.clone().dynamic_cast::<AppSink>().unwrap();
 
-        // TODO: wtf do I do here
-        let stream_tx = self
-            .rtc
-            .direct_api()
-            .stream_tx_by_mid(self.video_mid.unwrap(), None)
-            .unwrap();
-
         appsink.set_callbacks(
             AppSinkCallbacks::builder()
                 .new_sample(move |sink| {
@@ -166,50 +160,84 @@ impl Client {
                     let buffer = sample.buffer().ok_or(gst::FlowError::Error)?;
                     let map = buffer.map_readable().map_err(|_| gst::FlowError::Error)?;
                     let data = map.as_slice();
-                    // info!("Got RTP packet: {} bytes", data.len());
+                    debug!("Got RTP packet: {} bytes", data.len());
 
-                    tx.send(data.to_vec()).unwrap();
+                    if let Err(_) = tx.send(data.to_vec()) {
+                        return Err(gst::FlowError::Eos);
+                    }
 
                     Ok(gstreamer::FlowSuccess::Ok)
                 })
                 .build(),
         );
 
-        // TODO: wtf do I do here
-        std::thread::spawn(move || {
-            while let Ok(packet) = rx.recv() {
-                stream_tx.write_rtp(
-                    Pt::new(),
-                    SeqNo::new(),
-                    90_0000,
-                    Instant::now(),
-                    false,
-                    ExtensionValues::default(),
-                    false,
-                    packet,
-                );
-            }
-        });
-
         // TODO: control the pipeline state externally
         pipeline.set_state(gst::State::Playing)?;
+        debug!("GStreamer pipeline started");
+
+        // RTP packaet parameters
+        let seq_no = Arc::new(AtomicU16::new(1));
+        let timestamp = Arc::new(AtomicU32::new(0));
+        let pt = Pt::from(96); // H.264 payload type
+        let start_time = Instant::now();
 
         let bus = pipeline.bus().unwrap();
 
-        for msg in bus.iter_timed(gst::ClockTime::NONE) {
-            match msg.view() {
-                gst::MessageView::Eos(..) => break,
-                gst::MessageView::Error(err) => {
-                    eprintln!(
-                        "Pipeline error from {:?}: {}",
-                        err.src().map(|s| s.path_string()),
-                        err.error()
-                    );
+        loop {
+            if let Some(msg) = bus.pop() {
+                match msg.view() {
+                    gst::MessageView::Eos(..) => {
+                        debug!("End of stream");
+                        break;
+                    }
+                    gst::MessageView::Error(err) => {
+                        eprintln!(
+                            "Pipeline error from {:?}: {}",
+                            err.src().map(|s| s.path_string()),
+                            err.error()
+                        );
+                        break;
+                    }
+                    _ => {
+                        debug!("Other message: {:?}", msg);
+                    }
+                }
+            }
+
+            if let Ok(packet) = rx.try_recv() {
+                let mut direct_api = self.rtc.direct_api();
+                let stream_tx = direct_api
+                    .stream_tx_by_mid(self.video_mid.unwrap(), None)
+                    .unwrap();
+
+                let current_seq = seq_no.fetch_add(1, Ordering::Relaxed);
+
+                // Calculate timestamp (90kHz clock for video)
+                let elapsed = start_time.elapsed();
+                let ts = (elapsed.as_millis() * 90) as u32;
+                timestamp.store(ts, Ordering::Relaxed);
+
+                if let Err(e) = stream_tx.write_rtp(
+                    pt,
+                    SeqNo::from(current_seq as u64),
+                    ts,
+                    Instant::now(),
+                    false, // not a marker
+                    ExtensionValues::default(),
+                    false, // not padding
+                    packet,
+                ) {
+                    debug!("Failed to send RTP packet: {:?}", e);
                     break;
                 }
-                _ => (),
             }
+            // debug!("Looping...");
+            // Small sleep to prevent busy waiting
+            std::thread::sleep(Duration::from_millis(1));
         }
+
+        pipeline.set_state(gst::State::Null)?;
+        debug!("GStreamer pipeline stopped");
 
         Ok(())
     }

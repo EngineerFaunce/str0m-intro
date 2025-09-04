@@ -141,10 +141,12 @@ async fn process_clients(state: AppState) {
             // TODO: start polling clients
             for (id, client) in clients.iter() {
                 let mut client = client.lock().await;
+                debug!("Polling client: {id}");
                 let timeout = match client.rtc.poll_output().unwrap() {
                     Output::Timeout(timeout) => timeout,
                     Output::Transmit(send) => {
                         // TODO: transmit data to WHEP clients
+                        debug!("Transmit: {:?}", send);
                         continue;
                     }
                     Output::Event(event) => match event {
@@ -158,6 +160,10 @@ async fn process_clients(state: AppState) {
                         }
                         Event::MediaData(data) => {
                             debug!("Media data: {:?}", data);
+                            return;
+                        }
+                        Event::RtpPacket(packet) => {
+                            debug!("RTP packet: {:?}", packet);
                             return;
                         }
                         _ => {

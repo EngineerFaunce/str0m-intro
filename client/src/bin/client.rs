@@ -1,6 +1,6 @@
 use anyhow::Error;
 use signaling::client::Client;
-use tracing::info;
+use tracing::debug;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[tokio::main]
@@ -13,7 +13,7 @@ async fn main() -> Result<(), Error> {
 
     client.make_whip_request().await?;
 
-    info!("Is the RTC alive? {:?}", client.rtc.is_alive());
+    debug!("Is the RTC alive? {:?}", client.rtc.is_alive());
 
     let _ = client.stream_test_video();
 
