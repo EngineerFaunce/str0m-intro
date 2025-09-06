@@ -178,7 +178,6 @@ impl Client {
         // RTP packaet parameters
         let seq_no = Arc::new(AtomicU16::new(1));
         let timestamp = Arc::new(AtomicU32::new(0));
-        let pt = Pt::from(96); // H.264 payload type
         let start_time = Instant::now();
 
         let bus = pipeline.bus().unwrap();
@@ -205,29 +204,45 @@ impl Client {
             }
 
             if let Ok(packet) = rx.try_recv() {
-                let mut direct_api = self.rtc.direct_api();
-                let stream_tx = direct_api
-                    .stream_tx_by_mid(self.video_mid.unwrap(), None)
-                    .unwrap();
+                let config = self.rtc.codec_config();
+                let payload_params = config.find(|_params| true);
+                if let Some(params) = payload_params {
+                    let pt = params.pt();
+                    // debug!("Using payload type: {:?}", pt);
 
-                let current_seq = seq_no.fetch_add(1, Ordering::Relaxed);
+                    let mut direct_api = self.rtc.direct_api();
+                    let stream_tx = direct_api
+                        .stream_tx_by_mid(self.video_mid.unwrap(), None)
+                        .unwrap();
 
-                // Calculate timestamp (90kHz clock for video)
-                let elapsed = start_time.elapsed();
-                let ts = (elapsed.as_millis() * 90) as u32;
-                timestamp.store(ts, Ordering::Relaxed);
+                    let current_seq = seq_no.fetch_add(1, Ordering::Relaxed);
 
-                if let Err(e) = stream_tx.write_rtp(
-                    pt,
-                    SeqNo::from(current_seq as u64),
-                    ts,
-                    Instant::now(),
-                    false, // not a marker
-                    ExtensionValues::default(),
-                    false, // not padding
-                    packet,
-                ) {
-                    debug!("Failed to send RTP packet: {:?}", e);
+                    // Calculate timestamp (90kHz clock for video)
+                    let elapsed = start_time.elapsed();
+                    let ts = (elapsed.as_millis() * 90) as u32;
+                    timestamp.store(ts, Ordering::Relaxed);
+
+                    match stream_tx.write_rtp(
+                        pt,
+                        SeqNo::from(current_seq as u64),
+                        ts,
+                        Instant::now(),
+                        false, // not a marker
+                        ExtensionValues::default(),
+                        false, // not padding
+                        packet,
+                    ) {
+                        Ok(_) => {
+                            debug!("Sent RTP packet: seq={}, ts={}", current_seq, ts);
+                        }
+                        // TODO: handle specific PacketError cases
+                        Err(e) => {
+                            debug!("Failed to send RTP packet: {:?}", e);
+                            break;
+                        }
+                    }
+                } else {
+                    debug!("No payload type found");
                     break;
                 }
             }
