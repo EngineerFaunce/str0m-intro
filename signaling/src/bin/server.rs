@@ -141,9 +141,12 @@ async fn process_clients(state: AppState) {
             // TODO: start polling clients
             for (id, client) in clients.iter() {
                 let mut client = client.lock().await;
-                debug!("Polling client: {id}");
+                // debug!("Polling client: {id}");
                 let timeout = match client.rtc.poll_output().unwrap() {
-                    Output::Timeout(timeout) => timeout,
+                    Output::Timeout(timeout) => {
+                        debug!("Timeout: {:?}", timeout);
+                        timeout
+                    }
                     Output::Transmit(send) => {
                         // TODO: transmit data to WHEP clients
                         debug!("Transmit: {:?}", send);
@@ -174,10 +177,9 @@ async fn process_clients(state: AppState) {
                 };
 
                 let duration = timeout - Instant::now();
+                debug!("Next loop");
             }
         }
-
-        // TODO: propagate changes to other clients
     }
 }
 
