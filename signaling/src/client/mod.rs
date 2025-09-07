@@ -45,12 +45,15 @@ impl Client {
             .set_stats_interval(Some(Duration::from_secs(2)))
             .build();
 
+        // TODO: for local testing only - both client and server on same machine
         let socket_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
         let socket = UdpSocket::bind(socket_addr).expect("Should bind udp socket");
-        debug!("local socket address: {:?}", socket.local_addr());
+
+        let actual_addr = socket.local_addr().expect("Failed to get local addr");
+        debug!("local socket address: {:?}", actual_addr);
 
         rtc.add_local_candidate(
-            Candidate::host(socket_addr, str0m::net::Protocol::Udp)
+            Candidate::host(actual_addr, str0m::net::Protocol::Udp)
                 .expect("Failed to create local candidate"),
         );
 
