@@ -13,7 +13,7 @@ async fn main() -> Result<(), Error> {
 
     client.make_whip_request().await?;
 
-    debug!("Is the RTC alive? {:?}", client.rtc.is_alive());
+    debug!("RTC alive: {:?}", client.rtc.is_alive());
 
     let _ = client.stream_test_video();
 

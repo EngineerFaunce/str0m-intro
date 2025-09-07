@@ -14,8 +14,8 @@ use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket},
     time::Duration,
 };
+use str0m::format::Codec;
 use str0m::media::Mid;
-use str0m::media::Pt;
 use str0m::rtp::ExtensionValues;
 use str0m::rtp::SeqNo;
 use str0m::{
@@ -133,6 +133,7 @@ impl Client {
     pub fn stream_test_video(&mut self) -> Result<()> {
         gst::init()?;
 
+        // * Set up GStreamer pipeline
         let pipeline = gst::Pipeline::default();
         let src = gst::ElementFactory::make("videotestsrc")
             .property("is-live", true)
@@ -151,11 +152,11 @@ impl Client {
         pipeline.add_many([&src, &conv, &enc, &pay, &sink])?;
         gst::Element::link_many([&src, &conv, &enc, &pay, &sink])?;
 
-        // Channel for RTP packets
+        // * Channel for RTP packets
         let (tx, rx): (Sender<Vec<u8>>, Receiver<Vec<u8>>) = mpsc::channel();
 
+        // * Set up appsink to capture RTP packets
         let appsink = sink.clone().dynamic_cast::<AppSink>().unwrap();
-
         appsink.set_callbacks(
             AppSinkCallbacks::builder()
                 .new_sample(move |sink| {
@@ -163,7 +164,7 @@ impl Client {
                     let buffer = sample.buffer().ok_or(gst::FlowError::Error)?;
                     let map = buffer.map_readable().map_err(|_| gst::FlowError::Error)?;
                     let data = map.as_slice();
-                    debug!("Got RTP packet: {} bytes", data.len());
+                    // debug!("Got RTP packet: {} bytes", data.len());
 
                     if let Err(_) = tx.send(data.to_vec()) {
                         return Err(gst::FlowError::Eos);
@@ -207,16 +208,12 @@ impl Client {
             }
 
             if let Ok(packet) = rx.try_recv() {
-                let config = self.rtc.codec_config();
-                let payload_params = config.find(|_params| true);
+                let payload_params = self
+                    .rtc
+                    .codec_config()
+                    .find(|p| p.spec().codec == Codec::H264);
                 if let Some(params) = payload_params {
                     let pt = params.pt();
-                    // debug!("Using payload type: {:?}", pt);
-
-                    let mut direct_api = self.rtc.direct_api();
-                    let stream_tx = direct_api
-                        .stream_tx_by_mid(self.video_mid.unwrap(), None)
-                        .unwrap();
 
                     let current_seq = seq_no.fetch_add(1, Ordering::Relaxed);
 
@@ -225,6 +222,10 @@ impl Client {
                     let ts = (elapsed.as_millis() * 90) as u32;
                     timestamp.store(ts, Ordering::Relaxed);
 
+                    let mut direct_api = self.rtc.direct_api();
+                    let stream_tx = direct_api
+                        .stream_tx_by_mid(self.video_mid.unwrap(), None)
+                        .unwrap();
                     match stream_tx.write_rtp(
                         pt,
                         SeqNo::from(current_seq as u64),
@@ -249,7 +250,6 @@ impl Client {
                     break;
                 }
             }
-            // debug!("Looping...");
             // Small sleep to prevent busy waiting
             std::thread::sleep(Duration::from_millis(1));
         }

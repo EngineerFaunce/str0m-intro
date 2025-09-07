@@ -18,7 +18,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use str0m::change::{SdpAnswer, SdpOffer};
-use str0m::{Event, Output};
+use str0m::{Event, IceConnectionState, Input, Output};
 use tokio::signal;
 use tokio::sync::{Mutex, RwLock};
 use tracing::debug;
@@ -110,6 +110,7 @@ async fn whip(State(state): State<AppState>, Json(payload): Json<SdpOffer>) -> R
 
 /// WHEP endpoint
 async fn whep(Json(payload): Json<SdpOffer>) -> Json<SdpAnswer> {
+    debug!("WHEP endpoint called: {:?}", payload);
     todo!()
 }
 
@@ -138,46 +139,73 @@ async fn process_clients(state: AppState) {
             }
 
             let clients = state.clients.read().await;
-            // TODO: start polling clients
-            for (id, client) in clients.iter() {
+            for (_id, client) in clients.iter() {
                 let mut client = client.lock().await;
                 // debug!("Polling client: {id}");
                 let timeout = match client.rtc.poll_output().unwrap() {
                     Output::Timeout(timeout) => {
-                        debug!("Timeout: {:?}", timeout);
+                        // debug!("Timeout: {:?}", timeout);
                         timeout
                     }
                     Output::Transmit(send) => {
-                        // TODO: transmit data to WHEP clients
-                        debug!("Transmit: {:?}", send);
+                        if let Err(e) = client.socket.send_to(&send.contents, send.destination) {
+                            debug!(
+                                "sending to {} => {}, len {} error {:?}",
+                                send.source,
+                                send.destination,
+                                send.contents.len(),
+                                e
+                            );
+                        };
                         continue;
                     }
-                    Output::Event(event) => match event {
-                        Event::Connected => {
-                            debug!("connected");
-                            return;
+                    Output::Event(event) => {
+                        match event {
+                            Event::Connected => {
+                                debug!("connected");
+                            }
+                            Event::MediaAdded(media) => {
+                                debug!("Media added: {:?}", media);
+                            }
+                            Event::MediaData(data) => {
+                                debug!("Media data: {:?}", data);
+                            }
+                            Event::RtpPacket(packet) => {
+                                debug!("RTP packet: {:?}", packet);
+                            }
+                            Event::IceConnectionStateChange(state) => {
+                                match state {
+                                    IceConnectionState::New => debug!("ICE state: New"),
+                                    IceConnectionState::Checking => debug!("ICE state: Checking"),
+                                    IceConnectionState::Connected => debug!("ICE state: Connected"),
+                                    IceConnectionState::Completed => debug!("ICE state: Completed"),
+                                    IceConnectionState::Disconnected => {
+                                        debug!("ICE state: Disconnected");
+                                        return;
+                                    }
+                                }
+                                continue;
+                            }
+                            Event::PeerStats(_stats) => {
+                                // debug!("Peer stats: {:?}", stats);
+                            }
+                            _ => {
+                                panic!("unhandled event: {:?}", event);
+                            }
                         }
-                        Event::MediaAdded(media) => {
-                            debug!("Media added: {:?}", media);
-                            return;
-                        }
-                        Event::MediaData(data) => {
-                            debug!("Media data: {:?}", data);
-                            return;
-                        }
-                        Event::RtpPacket(packet) => {
-                            debug!("RTP packet: {:?}", packet);
-                            return;
-                        }
-                        _ => {
-                            debug!("unhandled event: {:?}", event);
-                            return;
-                        }
-                    },
+                        continue;
+                    }
                 };
 
                 let duration = timeout - Instant::now();
-                debug!("Next loop");
+                if duration.is_zero() {
+                    // Drive time forward in rtc straight away
+                    client
+                        .rtc
+                        .handle_input(Input::Timeout(Instant::now()))
+                        .unwrap();
+                    continue;
+                }
             }
         }
     }
