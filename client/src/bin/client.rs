@@ -13,7 +13,18 @@ async fn main() -> Result<(), Error> {
 
     client.make_whip_request().await?;
 
-    debug!("RTC alive: {:?}", client.rtc.is_alive());
+    tokio::spawn(async move {
+        loop {
+            match client.run() {
+                Ok(_) => {}
+                Err(e) => {
+                    debug!("Client ran into error: {:?}", e);
+                    continue;
+                }
+            }
+            tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+        }
+    });
 
     let _ = client.stream_test_video();
 

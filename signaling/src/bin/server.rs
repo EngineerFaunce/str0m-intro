@@ -140,8 +140,13 @@ async fn process_clients(state: AppState) {
             let clients = state.clients.read().await;
             for (_id, client) in clients.iter() {
                 let mut client = client.lock().await;
-                // debug!("Polling client: {id}");
-                client.run();
+                match client.run() {
+                    Ok(_) => {}
+                    Err(e) => {
+                        debug!("Client ran into error: {:?}", e);
+                        continue;
+                    }
+                }
             }
         }
     }

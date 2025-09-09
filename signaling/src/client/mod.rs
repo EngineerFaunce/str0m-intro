@@ -4,6 +4,7 @@ use gstreamer::{self as gst, prelude::*};
 use gstreamer_app::{AppSink, AppSinkCallbacks};
 use reqwest::header::{HeaderValue, ACCEPT};
 use reqwest::{header::CONTENT_TYPE, ClientBuilder};
+use std::io::ErrorKind;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU16, AtomicU32, Ordering};
 use std::sync::mpsc;
@@ -16,6 +17,8 @@ use std::{
 };
 use str0m::format::Codec;
 use str0m::media::Mid;
+use str0m::net::Protocol;
+use str0m::net::Receive;
 use str0m::rtp::ExtensionValues;
 use str0m::rtp::SeqNo;
 use str0m::Event;
@@ -29,6 +32,7 @@ use str0m::{
 use tokio::fs::File;
 use tokio::io::AsyncReadExt;
 use tracing::debug;
+use tracing::info;
 use uuid::Uuid;
 
 #[derive(Debug)]
@@ -37,6 +41,7 @@ pub struct Client {
     pub rtc: Rtc,
     pub socket: UdpSocket,
     video_mid: Option<Mid>,
+    buf: [u8; 1500],
 }
 
 impl Client {
@@ -66,6 +71,7 @@ impl Client {
             rtc,
             socket,
             video_mid: None,
+            buf: [0u8; 1500],
         })
     }
 
@@ -89,6 +95,7 @@ impl Client {
         headers.append(ACCEPT, HeaderValue::from_str("application/sdp").unwrap());
 
         let mut buf = Vec::new();
+
         // TODO: should the certificate and key be moved to a more central location?
         let temp = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("self_signed_certs")
@@ -97,6 +104,7 @@ impl Client {
         let bytes_read = file.read_to_end(&mut buf).await?;
         debug!("Read {:?} bytes from cert file.", bytes_read);
         let cert = reqwest::Certificate::from_pem(&buf)?;
+
         let http_client = ClientBuilder::new()
             .default_headers(headers)
             .add_root_certificate(cert)
@@ -135,12 +143,9 @@ impl Client {
     }
 
     // TODO: refactor to return Result and handle errors in caller
-    pub fn run(&mut self) {
+    pub fn run(&mut self) -> Result<(), Error> {
         let timeout = match self.rtc.poll_output().unwrap() {
-            Output::Timeout(timeout) => {
-                // debug!("Timeout: {:?}", timeout);
-                timeout
-            }
+            Output::Timeout(timeout) => timeout,
             Output::Transmit(send) => {
                 if let Err(e) = self.socket.send_to(&send.contents, send.destination) {
                     debug!(
@@ -151,56 +156,83 @@ impl Client {
                         e
                     );
                 };
-                // continue;
+                return Ok(());
             }
-            Output::Event(event) => {
-                match event {
-                    Event::Connected => {
-                        debug!("connected");
-                    }
-                    Event::MediaAdded(media) => {
-                        debug!("Media added: {:?}", media);
-                    }
-                    Event::MediaData(data) => {
-                        debug!("Media data: {:?}", data);
-                    }
-                    Event::RtpPacket(packet) => {
-                        debug!("RTP packet: {:?}", packet);
-                    }
-                    Event::IceConnectionStateChange(state) => {
-                        match state {
-                            IceConnectionState::New => debug!("ICE state: New"),
-                            IceConnectionState::Checking => debug!("ICE state: Checking"),
-                            IceConnectionState::Connected => debug!("ICE state: Connected"),
-                            IceConnectionState::Completed => debug!("ICE state: Completed"),
-                            IceConnectionState::Disconnected => {
-                                debug!("ICE state: Disconnected");
-                                return;
-                            }
+            Output::Event(event) => match event {
+                Event::Connected => {
+                    info!("connected");
+                    return Ok(());
+                }
+                Event::IceConnectionStateChange(state) => {
+                    info!("ice connection state change: {:?}", state);
+                    match state {
+                        IceConnectionState::Disconnected => {
+                            return Err(anyhow::anyhow!("ICE Disconnected"));
                         }
-                        // continue;
-                    }
-                    Event::PeerStats(_stats) => {
-                        // debug!("Peer stats: {:?}", stats);
-                    }
-                    _ => {
-                        panic!("unhandled event: {:?}", event);
+                        _ => return Ok(()),
                     }
                 }
-                // continue;
-            }
+                Event::MediaAdded(media) => {
+                    info!("Media added: {:?}", media);
+                    info!("Codec config: {:?}", self.rtc.codec_config());
+                    return Ok(());
+                }
+                Event::MediaData(data) => {
+                    debug!("Media data: {:?}", data);
+                    return Ok(());
+                }
+                Event::RtpPacket(packet) => {
+                    debug!("RTP packet: {:?}", packet);
+                    return Ok(());
+                }
+                _ => {
+                    return Ok(());
+                }
+            },
         };
 
         let duration = timeout - Instant::now();
         if duration.is_zero() {
             // Drive time forward in rtc straight away
+            // TODO: error handling
             self.rtc
                 .handle_input(Input::Timeout(Instant::now()))
                 .unwrap();
-            // continue;
+            return Ok(());
         }
 
         self.socket.set_read_timeout(Some(duration)).unwrap();
+
+        let input = match self.socket.recv_from(&mut self.buf) {
+            Ok((n, source)) => {
+                // UDP data received.
+                self.buf[n..].fill(0); // zero out the rest of the buffer
+                Input::Receive(
+                    Instant::now(),
+                    Receive {
+                        proto: Protocol::Udp,
+                        source,
+                        destination: self.socket.local_addr().unwrap(),
+                        contents: self.buf.as_slice().try_into().unwrap(),
+                    },
+                )
+            }
+            Err(e) => match e.kind() {
+                // Expected error for set_read_timeout().
+                // One for windows, one for the rest.
+                ErrorKind::WouldBlock | ErrorKind::TimedOut => Input::Timeout(Instant::now()),
+
+                e => {
+                    eprintln!("Error: {:?}", e);
+                    return Err(anyhow::anyhow!("Socket recv error: {:?}", e));
+                }
+            },
+        };
+
+        // Input is either a Timeout or Receive of data. Both drive the state forward.
+        self.rtc.handle_input(input).unwrap();
+
+        Ok(())
     }
 
     pub fn stream_test_video(&mut self) -> Result<()> {
