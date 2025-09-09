@@ -18,6 +18,10 @@ use str0m::format::Codec;
 use str0m::media::Mid;
 use str0m::rtp::ExtensionValues;
 use str0m::rtp::SeqNo;
+use str0m::Event;
+use str0m::IceConnectionState;
+use str0m::Input;
+use str0m::Output;
 use str0m::{
     change::{SdpAnswer, SdpOffer},
     Candidate, Rtc, RtcError,
@@ -128,6 +132,75 @@ impl Client {
             .expect("offer to be accepted");
 
         Ok(answer.to_sdp_string())
+    }
+
+    // TODO: refactor to return Result and handle errors in caller
+    pub fn run(&mut self) {
+        let timeout = match self.rtc.poll_output().unwrap() {
+            Output::Timeout(timeout) => {
+                // debug!("Timeout: {:?}", timeout);
+                timeout
+            }
+            Output::Transmit(send) => {
+                if let Err(e) = self.socket.send_to(&send.contents, send.destination) {
+                    debug!(
+                        "sending to {} => {}, len {} error {:?}",
+                        send.source,
+                        send.destination,
+                        send.contents.len(),
+                        e
+                    );
+                };
+                // continue;
+            }
+            Output::Event(event) => {
+                match event {
+                    Event::Connected => {
+                        debug!("connected");
+                    }
+                    Event::MediaAdded(media) => {
+                        debug!("Media added: {:?}", media);
+                    }
+                    Event::MediaData(data) => {
+                        debug!("Media data: {:?}", data);
+                    }
+                    Event::RtpPacket(packet) => {
+                        debug!("RTP packet: {:?}", packet);
+                    }
+                    Event::IceConnectionStateChange(state) => {
+                        match state {
+                            IceConnectionState::New => debug!("ICE state: New"),
+                            IceConnectionState::Checking => debug!("ICE state: Checking"),
+                            IceConnectionState::Connected => debug!("ICE state: Connected"),
+                            IceConnectionState::Completed => debug!("ICE state: Completed"),
+                            IceConnectionState::Disconnected => {
+                                debug!("ICE state: Disconnected");
+                                return;
+                            }
+                        }
+                        // continue;
+                    }
+                    Event::PeerStats(_stats) => {
+                        // debug!("Peer stats: {:?}", stats);
+                    }
+                    _ => {
+                        panic!("unhandled event: {:?}", event);
+                    }
+                }
+                // continue;
+            }
+        };
+
+        let duration = timeout - Instant::now();
+        if duration.is_zero() {
+            // Drive time forward in rtc straight away
+            self.rtc
+                .handle_input(Input::Timeout(Instant::now()))
+                .unwrap();
+            // continue;
+        }
+
+        self.socket.set_read_timeout(Some(duration)).unwrap();
     }
 
     pub fn stream_test_video(&mut self) -> Result<()> {
