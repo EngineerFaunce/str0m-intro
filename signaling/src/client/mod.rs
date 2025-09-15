@@ -102,8 +102,7 @@ impl Client {
             .join("self_signed_certs")
             .join("cert.pem");
         let mut file = File::open(temp).await?;
-        let bytes_read = file.read_to_end(&mut buf).await?;
-        debug!("Read {:?} bytes from cert file.", bytes_read);
+        let _bytes_read = file.read_to_end(&mut buf).await?;
         let cert = reqwest::Certificate::from_pem(&buf)?;
 
         let http_client = ClientBuilder::new()
@@ -195,11 +194,13 @@ impl Client {
         let duration = timeout - Instant::now();
         if duration.is_zero() {
             // Drive time forward in rtc straight away
-            // TODO: error handling
-            self.rtc
-                .handle_input(Input::Timeout(Instant::now()))
-                .unwrap();
-            return Ok(());
+            return match self.rtc.handle_input(Input::Timeout(Instant::now())) {
+                Ok(_) => Ok(()),
+                Err(e) => {
+                    error!("error handling input: {:?}", e);
+                    Ok(())
+                }
+            };
         }
 
         let input = match tokio::time::timeout(duration, self.socket.recv_from(&mut self.buf)).await
