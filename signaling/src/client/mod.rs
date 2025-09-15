@@ -1,18 +1,15 @@
 use anyhow::Error;
 use anyhow::Result;
-use gstreamer::{self as gst, prelude::*};
-use gstreamer_app::{AppSink, AppSinkCallbacks};
 use reqwest::header::{HeaderValue, ACCEPT};
 use reqwest::{header::CONTENT_TYPE, ClientBuilder};
 use std::io::ErrorKind;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU16, AtomicU32, Ordering};
-use std::sync::mpsc;
-use std::sync::mpsc::{Receiver, Sender};
+use std::sync::mpsc::Receiver;
 use std::sync::Arc;
 use std::time::Instant;
 use std::{
-    net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket},
+    net::{IpAddr, Ipv4Addr, SocketAddr},
     time::Duration,
 };
 use str0m::format::Codec;
@@ -31,7 +28,9 @@ use str0m::{
 };
 use tokio::fs::File;
 use tokio::io::AsyncReadExt;
+use tokio::net::UdpSocket;
 use tracing::debug;
+use tracing::error;
 use tracing::info;
 use uuid::Uuid;
 
@@ -45,7 +44,7 @@ pub struct Client {
 }
 
 impl Client {
-    pub fn new() -> Result<Self, RtcError> {
+    pub async fn new() -> Result<Self, RtcError> {
         // * Set up the WebRTC client
         let mut rtc = Rtc::builder()
             .set_rtp_mode(true)
@@ -56,7 +55,9 @@ impl Client {
 
         // TODO: for local testing only - both client and server on same machine
         let socket_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
-        let socket = UdpSocket::bind(socket_addr).expect("Should bind udp socket");
+        let socket = UdpSocket::bind(socket_addr)
+            .await
+            .expect("Should bind udp socket");
 
         let actual_addr = socket.local_addr().expect("Failed to get local addr");
         debug!("local socket address: {:?}", actual_addr);
@@ -143,11 +144,11 @@ impl Client {
     }
 
     // TODO: refactor to return Result and handle errors in caller
-    pub fn run(&mut self) -> Result<(), Error> {
+    pub async fn run(&mut self) -> Result<(), Error> {
         let timeout = match self.rtc.poll_output().unwrap() {
             Output::Timeout(timeout) => timeout,
             Output::Transmit(send) => {
-                if let Err(e) = self.socket.send_to(&send.contents, send.destination) {
+                if let Err(e) = self.socket.send_to(&send.contents, send.destination).await {
                     debug!(
                         "sending to {} => {}, len {} error {:?}",
                         send.source,
@@ -201,11 +202,16 @@ impl Client {
             return Ok(());
         }
 
-        self.socket.set_read_timeout(Some(duration)).unwrap();
-
-        let input = match self.socket.recv_from(&mut self.buf) {
-            Ok((n, source)) => {
+        let input = match tokio::time::timeout(duration, self.socket.recv_from(&mut self.buf)).await
+        {
+            Ok(Ok((n, source))) => {
                 // UDP data received.
+                info!(
+                    "received from {} => {}, len {}",
+                    source,
+                    self.socket.local_addr().unwrap(),
+                    n
+                );
                 self.buf[n..].fill(0); // zero out the rest of the buffer
                 Input::Receive(
                     Instant::now(),
@@ -213,20 +219,17 @@ impl Client {
                         proto: Protocol::Udp,
                         source,
                         destination: self.socket.local_addr().unwrap(),
-                        contents: self.buf.as_slice().try_into().unwrap(),
+                        contents: (&self.buf[..n]).try_into().expect("should webrtc"),
                     },
                 )
             }
-            Err(e) => match e.kind() {
-                // Expected error for set_read_timeout().
-                // One for windows, one for the rest.
-                ErrorKind::WouldBlock | ErrorKind::TimedOut => Input::Timeout(Instant::now()),
-
-                e => {
-                    eprintln!("Error: {:?}", e);
-                    return Err(anyhow::anyhow!("Socket recv error: {:?}", e));
+            Ok(Err(e)) => match e.kind() {
+                ErrorKind::ConnectionReset => return Ok(()),
+                _ => {
+                    return Err(anyhow::anyhow!("[TransportWebrtc] network error {:?}", e));
                 }
             },
+            Err(_e) => Input::Timeout(Instant::now()),
         };
 
         // Input is either a Timeout or Receive of data. Both drive the state forward.
@@ -235,132 +238,53 @@ impl Client {
         Ok(())
     }
 
-    pub fn stream_test_video(&mut self) -> Result<()> {
-        gst::init()?;
-
-        // * Set up GStreamer pipeline
-        let pipeline = gst::Pipeline::default();
-        let src = gst::ElementFactory::make("videotestsrc")
-            .property("is-live", true)
-            .property_from_str("pattern", "ball")
-            .build()?;
-        let conv = gst::ElementFactory::make("videoconvert").build()?;
-        let enc = gst::ElementFactory::make("x264enc")
-            .property_from_str("tune", "zerolatency")
-            .build()?;
-        let pay = gst::ElementFactory::make("rtph264pay").build()?;
-        let sink = gst::ElementFactory::make("appsink")
-            .property("emit-signals", true)
-            .property("sync", false)
-            .build()?;
-
-        pipeline.add_many([&src, &conv, &enc, &pay, &sink])?;
-        gst::Element::link_many([&src, &conv, &enc, &pay, &sink])?;
-
-        // * Channel for RTP packets
-        let (tx, rx): (Sender<Vec<u8>>, Receiver<Vec<u8>>) = mpsc::channel();
-
-        // * Set up appsink to capture RTP packets
-        let appsink = sink.clone().dynamic_cast::<AppSink>().unwrap();
-        appsink.set_callbacks(
-            AppSinkCallbacks::builder()
-                .new_sample(move |sink| {
-                    let sample = sink.pull_sample().map_err(|_| gst::FlowError::Eos)?;
-                    let buffer = sample.buffer().ok_or(gst::FlowError::Error)?;
-                    let map = buffer.map_readable().map_err(|_| gst::FlowError::Error)?;
-                    let data = map.as_slice();
-                    // debug!("Got RTP packet: {} bytes", data.len());
-
-                    if let Err(_) = tx.send(data.to_vec()) {
-                        return Err(gst::FlowError::Eos);
-                    }
-
-                    Ok(gstreamer::FlowSuccess::Ok)
-                })
-                .build(),
-        );
-
-        // TODO: control the pipeline state externally
-        pipeline.set_state(gst::State::Playing)?;
-        debug!("GStreamer pipeline started");
-
+    pub fn send_video(&mut self, receive_channel: &Receiver<Vec<u8>>) -> Result<(), RtcError> {
         // RTP packaet parameters
         let seq_no = Arc::new(AtomicU16::new(1));
         let timestamp = Arc::new(AtomicU32::new(0));
         let start_time = Instant::now();
 
-        let bus = pipeline.bus().unwrap();
+        if let Ok(packet) = receive_channel.try_recv() {
+            let payload_params = self
+                .rtc
+                .codec_config()
+                .find(|p| p.spec().codec == Codec::H264);
+            if let Some(params) = payload_params {
+                let pt = params.pt();
 
-        loop {
-            if let Some(msg) = bus.pop() {
-                match msg.view() {
-                    gst::MessageView::Eos(..) => {
-                        debug!("End of stream");
-                        break;
+                let current_seq = seq_no.fetch_add(1, Ordering::Relaxed);
+
+                // Calculate timestamp (90kHz clock for video)
+                let elapsed = start_time.elapsed();
+                let ts = (elapsed.as_millis() * 90) as u32;
+                timestamp.store(ts, Ordering::Relaxed);
+
+                let mut direct_api = self.rtc.direct_api();
+                let stream_tx = direct_api
+                    .stream_tx_by_mid(self.video_mid.unwrap(), None)
+                    .unwrap();
+                match stream_tx.write_rtp(
+                    pt,
+                    SeqNo::from(current_seq as u64),
+                    ts,
+                    Instant::now(),
+                    false, // not a marker
+                    ExtensionValues::default(),
+                    false, // not padding
+                    packet,
+                ) {
+                    Ok(_) => {
+                        info!("Sent RTP packet: seq={}, ts={}", current_seq, ts);
                     }
-                    gst::MessageView::Error(err) => {
-                        eprintln!(
-                            "Pipeline error from {:?}: {}",
-                            err.src().map(|s| s.path_string()),
-                            err.error()
-                        );
-                        break;
-                    }
-                    _ => {
-                        debug!("Other message: {:?}", msg);
+                    // TODO: handle specific PacketError cases
+                    Err(e) => {
+                        error!("Failed to send RTP packet: {:?}", e);
                     }
                 }
+            } else {
+                debug!("No payload type found");
             }
-
-            if let Ok(packet) = rx.try_recv() {
-                let payload_params = self
-                    .rtc
-                    .codec_config()
-                    .find(|p| p.spec().codec == Codec::H264);
-                if let Some(params) = payload_params {
-                    let pt = params.pt();
-
-                    let current_seq = seq_no.fetch_add(1, Ordering::Relaxed);
-
-                    // Calculate timestamp (90kHz clock for video)
-                    let elapsed = start_time.elapsed();
-                    let ts = (elapsed.as_millis() * 90) as u32;
-                    timestamp.store(ts, Ordering::Relaxed);
-
-                    let mut direct_api = self.rtc.direct_api();
-                    let stream_tx = direct_api
-                        .stream_tx_by_mid(self.video_mid.unwrap(), None)
-                        .unwrap();
-                    match stream_tx.write_rtp(
-                        pt,
-                        SeqNo::from(current_seq as u64),
-                        ts,
-                        Instant::now(),
-                        false, // not a marker
-                        ExtensionValues::default(),
-                        false, // not padding
-                        packet,
-                    ) {
-                        Ok(_) => {
-                            debug!("Sent RTP packet: seq={}, ts={}", current_seq, ts);
-                        }
-                        // TODO: handle specific PacketError cases
-                        Err(e) => {
-                            debug!("Failed to send RTP packet: {:?}", e);
-                            break;
-                        }
-                    }
-                } else {
-                    debug!("No payload type found");
-                    break;
-                }
-            }
-            // Small sleep to prevent busy waiting
-            std::thread::sleep(Duration::from_millis(1));
         }
-
-        pipeline.set_state(gst::State::Null)?;
-        debug!("GStreamer pipeline stopped");
 
         Ok(())
     }

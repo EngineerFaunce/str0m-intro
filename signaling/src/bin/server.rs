@@ -89,7 +89,7 @@ async fn main() {
 
 /// WHIP endpoint
 async fn whip(State(state): State<AppState>, Json(payload): Json<SdpOffer>) -> Response<String> {
-    let mut client = Client::new().expect("Failed to create client");
+    let mut client = Client::new().await.expect("Failed to create client");
 
     let answer = client.accept_whip_request(payload).await.unwrap();
 
@@ -140,7 +140,7 @@ async fn process_clients(state: AppState) {
             let clients = state.clients.read().await;
             for (_id, client) in clients.iter() {
                 let mut client = client.lock().await;
-                match client.run() {
+                match client.run().await {
                     Ok(_) => {}
                     Err(e) => {
                         debug!("Client ran into error: {:?}", e);

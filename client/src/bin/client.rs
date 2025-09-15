@@ -1,6 +1,6 @@
 use anyhow::Error;
 use signaling::client::Client;
-use tracing::debug;
+use std::sync::mpsc::{self, Receiver, Sender};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[tokio::main]
@@ -9,24 +9,21 @@ async fn main() -> Result<(), Error> {
         .with(tracing_subscriber::fmt::layer())
         .init();
 
-    let mut client = Client::new().expect("Failed to create client");
+    let mut client = Client::new().await.expect("Failed to create client");
 
     client.make_whip_request().await?;
 
-    tokio::spawn(async move {
-        loop {
-            match client.run() {
-                Ok(_) => {}
-                Err(e) => {
-                    debug!("Client ran into error: {:?}", e);
-                    continue;
-                }
-            }
-            tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
-        }
-    });
+    // * Channel for RTP packets
+    let (tx, rx): (Sender<Vec<u8>>, Receiver<Vec<u8>>) = mpsc::channel();
+    tokio::task::spawn_blocking(move || media::stream_test_video(tx.clone()));
 
-    let _ = client.stream_test_video();
+    loop {
+        if let Err(e) = client.run().await {
+            eprintln!("Error running client: {:?}", e);
+            break;
+        }
+        client.send_video(&rx)?;
+    }
 
     Ok(())
 }
