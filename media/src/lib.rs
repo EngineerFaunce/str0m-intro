@@ -2,7 +2,7 @@ use anyhow::Result;
 use gstreamer::{self as gst, prelude::*};
 use gstreamer_app::{AppSink, AppSinkCallbacks};
 use std::{sync::mpsc::Sender, time::Duration};
-use tracing::{debug, trace};
+use tracing::{debug, error, trace};
 
 pub fn stream_test_video(sender_channel: Sender<Vec<u8>>) -> Result<()> {
     gst::init()?;
@@ -59,7 +59,7 @@ pub fn stream_test_video(sender_channel: Sender<Vec<u8>>) -> Result<()> {
                     break;
                 }
                 gst::MessageView::Error(err) => {
-                    eprintln!(
+                    error!(
                         "Pipeline error from {:?}: {}",
                         err.src().map(|s| s.path_string()),
                         err.error()

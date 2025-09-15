@@ -1,6 +1,7 @@
 use anyhow::Error;
 use signaling::client::Client;
 use std::sync::mpsc::{self, Receiver, Sender};
+use tracing::error;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[tokio::main]
@@ -19,7 +20,7 @@ async fn main() -> Result<(), Error> {
 
     loop {
         if let Err(e) = client.run().await {
-            eprintln!("Error running client: {:?}", e);
+            error!("Client error: {:?}", e);
             break;
         }
         client.send_video(&rx)?;
