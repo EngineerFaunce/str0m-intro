@@ -1,0 +1,13 @@
+[package]
+name = "media"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0.95"
+gstreamer = "0.23.5"
+gstreamer-app = "0.23.5"
+gstreamer-base = "0.23.6"
+tokio = { version = "1.41.1", features = ["full"] }
+tracing = "0.1.41"
+tracing-subscriber = "0.3.18"
