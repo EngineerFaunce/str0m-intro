@@ -107,41 +107,39 @@ async fn whep(Json(payload): Json<SdpOffer>) -> Json<SdpAnswer> {
 async fn process_clients(mut client_channel: Receiver<Client>) {
     let mut clients: HashMap<Uuid, Client> = HashMap::new();
     loop {
+        // * Try and receive a new client
+        match client_channel.try_recv() {
+            Ok(client) => {
+                debug!("New client: {:?}", client.id);
+                clients.insert(client.id, client);
+            }
+            Err(_) => {
+                // TODO: handle error
+            }
+        }
+
+        // * Prune dead clients
         {
-            // * Try and receive a new client
-            match client_channel.try_recv() {
-                Ok(client) => {
-                    debug!("New client: {:?}", client.id);
-                    clients.insert(client.id, client);
-                }
-                Err(_) => {
-                    // TODO: handle error
+            let mut targets = Vec::new();
+            for (id, client) in clients.iter() {
+                if !client.rtc.is_alive() {
+                    targets.push(*id);
                 }
             }
 
-            // * Prune dead clients
-            {
-                let mut targets = Vec::new();
-                for (id, client) in clients.iter() {
-                    if !client.rtc.is_alive() {
-                        targets.push(*id);
-                    }
-                }
-
-                for id in targets {
-                    debug!("Pruning client: {id}");
-                    clients.remove(&id);
-                }
+            for id in targets {
+                debug!("Pruning client: {id}");
+                clients.remove(&id);
             }
+        }
 
-            // * Process each client
-            for (_id, client) in clients.iter_mut() {
-                match client.run().await {
-                    Ok(_) => {}
-                    Err(e) => {
-                        debug!("Client ran into error: {:?}", e);
-                        continue;
-                    }
+        // * Process each client
+        for (_id, client) in clients.iter_mut() {
+            match client.run().await {
+                Ok(_) => {}
+                Err(e) => {
+                    debug!("Client ran into error: {:?}", e);
+                    continue;
                 }
             }
         }
