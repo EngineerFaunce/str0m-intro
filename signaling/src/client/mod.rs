@@ -14,8 +14,7 @@ use std::{
 };
 use str0m::format::Codec;
 use str0m::media::Mid;
-use str0m::net::Protocol;
-use str0m::net::Receive;
+use str0m::net::{Protocol, Receive};
 use str0m::rtp::ExtensionValues;
 use str0m::rtp::SeqNo;
 use str0m::Event;
