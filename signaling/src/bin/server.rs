@@ -15,11 +15,10 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::time::Duration;
 use str0m::change::{SdpAnswer, SdpOffer};
 use tokio::signal;
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::mpsc::{self, Receiver, Sender};
 use tracing::debug;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use uuid::Uuid;
@@ -32,7 +31,7 @@ struct Ports {
 
 #[derive(Clone)]
 pub struct AppState {
-    pub clients: Arc<RwLock<HashMap<Uuid, Arc<Mutex<Client>>>>>,
+    pub client_channel: Sender<Client>,
 }
 
 #[tokio::main]
@@ -54,12 +53,13 @@ async fn main() {
     // optional: spawn a second server to redirect http requests to this server
     tokio::spawn(redirect_http_to_https(ports, shutdown_future));
 
+    let (tx, rx): (Sender<Client>, mpsc::Receiver<Client>) = mpsc::channel(10);
     let state = AppState {
-        clients: Arc::new(RwLock::new(HashMap::new())),
+        client_channel: tx.clone(),
     };
 
     // Separate thread to process WHIP/WHEP clients
-    tokio::spawn(process_clients(state.clone()));
+    tokio::spawn(process_clients(rx));
 
     // configure certificate and private key used by https
     let config = RustlsConfig::from_pem_file(
@@ -90,15 +90,9 @@ async fn main() {
 /// WHIP endpoint
 async fn whip(State(state): State<AppState>, Json(payload): Json<SdpOffer>) -> Response<String> {
     let mut client = Client::new().await.expect("Failed to create client");
-
     let answer = client.accept_whip_request(payload).await.unwrap();
 
-    let client_id = Uuid::new_v4();
-    {
-        let mut clients = state.clients.write().await;
-        clients.insert(client_id, Arc::new(Mutex::new(client)));
-        debug!("New client: {:?}", client_id);
-    }
+    state.client_channel.send(client).await.unwrap();
 
     Response::builder()
         .status(201)
@@ -113,33 +107,38 @@ async fn whep(Json(payload): Json<SdpOffer>) -> Json<SdpAnswer> {
     todo!()
 }
 
-async fn process_clients(state: AppState) {
+async fn process_clients(mut client_channel: Receiver<Client>) {
+    let mut clients: HashMap<Uuid, Client> = HashMap::new();
     loop {
         {
-            let mut targets = Vec::new();
+            // * Try and receive a new client
+            match client_channel.try_recv() {
+                Ok(client) => {
+                    debug!("New client: {:?}", client.id);
+                    clients.insert(client.id, client);
+                }
+                Err(_) => {
+                    // TODO: handle error
+                }
+            }
+
+            // * Prune dead clients
             {
-                let clients = state.clients.read().await;
+                let mut targets = Vec::new();
                 for (id, client) in clients.iter() {
-                    let client = client.lock().await;
                     if !client.rtc.is_alive() {
                         targets.push(*id);
                     }
                 }
-            }
 
-            {
-                if !targets.is_empty() {
-                    let mut clients = state.clients.write().await;
-                    for id in targets {
-                        debug!("Pruning client: {id}");
-                        clients.remove(&id);
-                    }
+                for id in targets {
+                    debug!("Pruning client: {id}");
+                    clients.remove(&id);
                 }
             }
 
-            let clients = state.clients.read().await;
-            for (_id, client) in clients.iter() {
-                let mut client = client.lock().await;
+            // * Process each client
+            for (_id, client) in clients.iter_mut() {
                 match client.run().await {
                     Ok(_) => {}
                     Err(e) => {
