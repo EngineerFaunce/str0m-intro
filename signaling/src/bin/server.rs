@@ -62,13 +62,10 @@ async fn main() {
     tokio::spawn(process_clients(rx));
 
     // configure certificate and private key used by https
+    let certificate_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("self_signed_certs");
     let config = RustlsConfig::from_pem_file(
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("self_signed_certs")
-            .join("cert.pem"),
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("self_signed_certs")
-            .join("key.pem"),
+        PathBuf::from(&certificate_dir).join("cert.pem"),
+        PathBuf::from(&certificate_dir).join("key.pem"),
     )
     .await
     .unwrap();
