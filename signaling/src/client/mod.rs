@@ -28,9 +28,6 @@ use str0m::{
 use tokio::fs::File;
 use tokio::io::AsyncReadExt;
 use tokio::net::UdpSocket;
-use tracing::debug;
-use tracing::error;
-use tracing::info;
 use uuid::Uuid;
 
 #[derive(Debug)]
@@ -59,7 +56,7 @@ impl Client {
             .expect("Should bind udp socket");
 
         let actual_addr = socket.local_addr().expect("Failed to get local addr");
-        debug!("local socket address: {:?}", actual_addr);
+        tracing::debug!("local socket address: {:?}", actual_addr);
 
         rtc.add_local_candidate(
             Candidate::host(actual_addr, str0m::net::Protocol::Udp)
@@ -147,7 +144,7 @@ impl Client {
             Output::Timeout(timeout) => timeout,
             Output::Transmit(send) => {
                 if let Err(e) = self.socket.send_to(&send.contents, send.destination).await {
-                    debug!(
+                    tracing::debug!(
                         "sending to {} => {}, len {} error {:?}",
                         send.source,
                         send.destination,
@@ -159,11 +156,11 @@ impl Client {
             }
             Output::Event(event) => match event {
                 Event::Connected => {
-                    info!("connected");
+                    tracing::trace!("connected");
                     return Ok(());
                 }
                 Event::IceConnectionStateChange(state) => {
-                    info!("ice connection state change: {:?}", state);
+                    tracing::trace!("ice connection state change: {:?}", state);
                     match state {
                         IceConnectionState::Disconnected => {
                             return Err(anyhow::anyhow!("ICE Disconnected"));
@@ -172,16 +169,16 @@ impl Client {
                     }
                 }
                 Event::MediaAdded(media) => {
-                    info!("Media added: {:?}", media);
-                    info!("Codec config: {:?}", self.rtc.codec_config());
+                    tracing::trace!("Media added: {:?}", media);
+                    tracing::trace!("Codec config: {:?}", self.rtc.codec_config());
                     return Ok(());
                 }
                 Event::MediaData(data) => {
-                    debug!("Media data: {:?}", data);
+                    tracing::trace!("Media data: {:?}", data);
                     return Ok(());
                 }
                 Event::RtpPacket(packet) => {
-                    debug!("RTP packet: {:?}", packet);
+                    tracing::trace!("RTP packet: {:?}", packet);
                     return Ok(());
                 }
                 _ => {
@@ -196,7 +193,7 @@ impl Client {
             return match self.rtc.handle_input(Input::Timeout(Instant::now())) {
                 Ok(_) => Ok(()),
                 Err(e) => {
-                    error!("error handling input: {:?}", e);
+                    tracing::error!("error handling input: {:?}", e);
                     Ok(())
                 }
             };
@@ -206,7 +203,7 @@ impl Client {
         {
             Ok(Ok((n, source))) => {
                 // UDP data received.
-                info!(
+                tracing::trace!(
                     "received from {} => {}, len {}",
                     source,
                     self.socket.local_addr().unwrap(),
@@ -274,15 +271,15 @@ impl Client {
                     packet,
                 ) {
                     Ok(_) => {
-                        info!("Sent RTP packet: seq={}, ts={}", current_seq, ts);
+                        tracing::trace!("Sent RTP packet: seq={}, ts={}", current_seq, ts);
                     }
                     // TODO: handle specific PacketError cases
                     Err(e) => {
-                        error!("Failed to send RTP packet: {:?}", e);
+                        tracing::error!("Failed to send RTP packet: {:?}", e);
                     }
                 }
             } else {
-                debug!("No payload type found");
+                tracing::debug!("No payload type found");
             }
         }
 
