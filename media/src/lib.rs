@@ -1,7 +1,8 @@
 use anyhow::Result;
 use gstreamer::{self as gst, prelude::*};
 use gstreamer_app::{AppSink, AppSinkCallbacks};
-use std::{sync::mpsc::Sender, time::Duration};
+use tokio::sync::mpsc::Sender;
+use std::time::Duration;
 use tracing::{debug, error, trace};
 
 pub fn stream_test_video(sender_channel: Sender<Vec<u8>>) -> Result<()> {
@@ -30,13 +31,13 @@ pub fn stream_test_video(sender_channel: Sender<Vec<u8>>) -> Result<()> {
     let appsink = sink.clone().dynamic_cast::<AppSink>().unwrap();
     appsink.set_callbacks(
         AppSinkCallbacks::builder()
-            .new_sample(move |sink| {
+            .new_sample(async move |sink| {
                 let sample = sink.pull_sample().map_err(|_| gst::FlowError::Eos)?;
                 let buffer = sample.buffer().ok_or(gst::FlowError::Error)?;
                 let map = buffer.map_readable().map_err(|_| gst::FlowError::Error)?;
                 let data = map.as_slice();
 
-                if let Err(_) = sender_channel.send(data.to_vec()) {
+                if let Err(e) = sender_channel.send(data.to_vec()).await {
                     return Err(gst::FlowError::Eos);
                 }
 
