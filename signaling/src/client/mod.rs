@@ -2,10 +2,10 @@ use anyhow::Error;
 use anyhow::Result;
 use reqwest::header::{HeaderValue, ACCEPT};
 use reqwest::{header::CONTENT_TYPE, ClientBuilder};
+use tokio::sync::mpsc::Receiver;
 use std::io::ErrorKind;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU16, AtomicU32, Ordering};
-use std::sync::mpsc::Receiver;
 use std::sync::Arc;
 use std::time::Instant;
 use std::{
@@ -235,7 +235,7 @@ impl Client {
         Ok(())
     }
 
-    pub fn send_video(&mut self, receive_channel: &Receiver<Vec<u8>>) -> Result<(), RtcError> {
+    pub fn send_video(&mut self, receive_channel: &mut Receiver<Vec<u8>>) -> Result<(), RtcError> {
         // RTP packaet parameters
         let seq_no = Arc::new(AtomicU16::new(1));
         let timestamp = Arc::new(AtomicU32::new(0));

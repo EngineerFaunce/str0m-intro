@@ -25,9 +25,9 @@ async fn main() -> Result<(), Error> {
     Ok(())
 }
 
-async fn run_client_loop(mut client: Client, rx: Receiver<Vec<u8>>) -> Result<(), Error> {
+async fn run_client_loop(mut client: Client, mut rx: Receiver<Vec<u8>>) -> Result<(), Error> {
     loop {
         client.run().await?;
-        client.send_video(&rx)?;
+        client.send_video(&mut rx)?;
     }
 }

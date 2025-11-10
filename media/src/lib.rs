@@ -31,13 +31,13 @@ pub fn stream_test_video(sender_channel: Sender<Vec<u8>>) -> Result<()> {
     let appsink = sink.clone().dynamic_cast::<AppSink>().unwrap();
     appsink.set_callbacks(
         AppSinkCallbacks::builder()
-            .new_sample(async move |sink| {
+            .new_sample(move |sink| {
                 let sample = sink.pull_sample().map_err(|_| gst::FlowError::Eos)?;
                 let buffer = sample.buffer().ok_or(gst::FlowError::Error)?;
                 let map = buffer.map_readable().map_err(|_| gst::FlowError::Error)?;
                 let data = map.as_slice();
 
-                if let Err(e) = sender_channel.send(data.to_vec()).await {
+                if let Err(e) = sender_channel.blocking_send(data.to_vec()) {
                     return Err(gst::FlowError::Eos);
                 }
 
