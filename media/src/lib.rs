@@ -38,6 +38,7 @@ pub fn stream_test_video(sender_channel: Sender<Vec<u8>>) -> Result<()> {
                 let data = map.as_slice();
 
                 if let Err(e) = sender_channel.blocking_send(data.to_vec()) {
+                    tracing::error!("Failed to send RTP packet through channel: {}", e);
                     return Err(gst::FlowError::Eos);
                 }
 
