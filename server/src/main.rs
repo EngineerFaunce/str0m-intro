@@ -16,6 +16,10 @@ use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
+use crate::sfu::{SessionClient, SessionKind, process_clients};
+
+mod sfu;
+
 #[derive(Clone, Copy)]
 struct Ports {
     https: u16,
@@ -23,7 +27,7 @@ struct Ports {
 
 #[derive(Clone)]
 pub struct AppState {
-    pub client_channel: Sender<Client>,
+    client_channel: Sender<SessionClient>,
 }
 
 #[tokio::main]
@@ -34,7 +38,7 @@ async fn main() -> Result<(), Error> {
 
     let ports = Ports { https: 3000 };
 
-    let (tx, rx): (Sender<Client>, mpsc::Receiver<Client>) = mpsc::channel(10);
+    let (tx, rx): (Sender<SessionClient>, mpsc::Receiver<SessionClient>) = mpsc::channel(10);
     let state = AppState {
         client_channel: tx.clone(),
     };
@@ -50,8 +54,9 @@ async fn main() -> Result<(), Error> {
 
     let app = Router::new()
         .route("/whip", post(whip))
-        .with_state(state)
-        .route("/whep", post(whep));
+        .with_state(state.clone())
+        .route("/whep", post(whep))
+        .with_state(state);
 
     let addr = SocketAddr::from(([127, 0, 0, 1], ports.https));
     let handle = axum_server::Handle::new();
@@ -88,9 +93,16 @@ async fn main() -> Result<(), Error> {
 /// WHIP endpoint
 async fn whip(State(state): State<AppState>, Json(payload): Json<SdpOffer>) -> Response<String> {
     let mut client = Client::new().await.expect("Failed to create client");
-    let answer = client.accept_whip_request(payload).await.unwrap();
+    let answer = client.accept_request(payload).await.unwrap();
 
-    state.client_channel.send(client).await.unwrap();
+    state
+        .client_channel
+        .send(SessionClient {
+            client,
+            kind: SessionKind::Whip,
+        })
+        .await
+        .unwrap();
 
     Response::builder()
         .status(201)
@@ -100,57 +112,24 @@ async fn whip(State(state): State<AppState>, Json(payload): Json<SdpOffer>) -> R
 }
 
 /// WHEP endpoint
-async fn whep(Json(payload): Json<SdpOffer>) -> Json<SdpAnswer> {
-    tracing::info!("WHEP endpoint called: {:?}", payload);
-    todo!()
-}
+async fn whep(State(state): State<AppState>, Json(payload): Json<SdpOffer>) -> Response<String> {
+    let mut client = Client::new().await.expect("Failed to create client");
+    let answer = client.accept_request(payload).await.unwrap();
 
-async fn process_clients(
-    mut client_channel: Receiver<Client>,
-    token: CancellationToken,
-) -> Result<(), std::io::Error> {
-    let mut clients = HashMap::new();
-    let mut interval = tokio::time::interval(Duration::from_millis(100));
-    loop {
-        tokio::select! {
-            _ = token.cancelled() => {
-                tracing::debug!("Received cancellation request, shutting down SFU...");
-                return Ok(());
-            }
+    state
+        .client_channel
+        .send(SessionClient {
+            client,
+            kind: SessionKind::Whep,
+        })
+        .await
+        .unwrap();
 
-            // * Try and receive a new client
-            client = client_channel.recv() => {
-                match client {
-                    Some(client) => {
-                        tracing::trace!("New client: {:?}", client.id);
-                        clients.insert(client.id, client);
-                    }
-                    None => {
-                        tracing::debug!("Client channel closed, shutting down client processor...");
-                        return Ok(());
-                    }
-                }
-            }
-            _ = interval.tick() => {
-                // * Prune dead clients
-                clients.retain(|id, client| {
-                    if !client.rtc.is_alive() {
-                        tracing::trace!("Pruning client: {id}");
-                        false
-                    } else {
-                        true
-                    }
-                });
-                // * Process each client
-                for (_id, client) in clients.iter_mut() {
-                    if let Err(e) = client.run(token.clone()).await {
-                        // TODO: handle ICE disconnections more gracefully
-                        tracing::debug!("Client ran into error: {:?}", e);
-                    }
-                }
-            }
-        }
-    }
+    Response::builder()
+        .status(201)
+        .header("Location", "/")
+        .body(answer)
+        .unwrap()
 }
 
 async fn shutdown_signal(token: CancellationToken) {
