@@ -1,7 +1,8 @@
 use anyhow::Result;
 use gstreamer::{self as gst, prelude::*};
 use gstreamer_app::{AppSink, AppSinkCallbacks};
-use std::{sync::mpsc::Sender, time::Duration};
+use std::time::Duration;
+use tokio::sync::mpsc::Sender;
 use tracing::{debug, error, trace};
 
 pub fn stream_test_video(sender_channel: Sender<Vec<u8>>) -> Result<()> {
@@ -36,7 +37,8 @@ pub fn stream_test_video(sender_channel: Sender<Vec<u8>>) -> Result<()> {
                 let map = buffer.map_readable().map_err(|_| gst::FlowError::Error)?;
                 let data = map.as_slice();
 
-                if let Err(_) = sender_channel.send(data.to_vec()) {
+                if let Err(e) = sender_channel.blocking_send(data.to_vec()) {
+                    tracing::error!("Failed to send RTP packet through channel: {}", e);
                     return Err(gst::FlowError::Eos);
                 }
 

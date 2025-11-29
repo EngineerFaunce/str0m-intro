@@ -1,12 +1,10 @@
 use anyhow::Error;
 use anyhow::Result;
+use rand::Rng;
 use reqwest::header::{HeaderValue, ACCEPT};
 use reqwest::{header::CONTENT_TYPE, ClientBuilder};
 use std::io::ErrorKind;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU16, AtomicU32, Ordering};
-use std::sync::mpsc::Receiver;
-use std::sync::Arc;
 use std::time::Instant;
 use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr},
@@ -14,8 +12,7 @@ use std::{
 };
 use str0m::format::Codec;
 use str0m::media::Mid;
-use str0m::net::Protocol;
-use str0m::net::Receive;
+use str0m::net::{Protocol, Receive};
 use str0m::rtp::ExtensionValues;
 use str0m::rtp::SeqNo;
 use str0m::Event;
@@ -29,9 +26,8 @@ use str0m::{
 use tokio::fs::File;
 use tokio::io::AsyncReadExt;
 use tokio::net::UdpSocket;
-use tracing::debug;
-use tracing::error;
-use tracing::info;
+use tokio::sync::mpsc::Receiver;
+use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 #[derive(Debug)]
@@ -40,7 +36,37 @@ pub struct Client {
     pub rtc: Rtc,
     pub socket: UdpSocket,
     video_mid: Option<Mid>,
+    video_rtp: RtpState,
     buf: [u8; 1500],
+}
+
+#[derive(Debug)]
+struct RtpState {
+    seq_no: u16,
+    ts_base: u32,
+    start_time: Instant,
+}
+
+impl RtpState {
+    fn new() -> Self {
+        let mut rng = rand::thread_rng();
+        Self {
+            seq_no: rng.gen::<u16>(),
+            ts_base: rng.gen::<u32>(),
+            start_time: Instant::now(),
+        }
+    }
+
+    fn next(&mut self) -> (SeqNo, u32) {
+        let seq = self.seq_no;
+        self.seq_no = self.seq_no.wrapping_add(1);
+
+        // 90kHz RTP clock for H.264 video
+        let elapsed_90khz = (self.start_time.elapsed().as_micros() * 90) as u32;
+        let ts = self.ts_base.wrapping_add(elapsed_90khz);
+
+        (SeqNo::from(seq as u64), ts)
+    }
 }
 
 impl Client {
@@ -55,23 +81,19 @@ impl Client {
 
         // TODO: for local testing only - both client and server on same machine
         let socket_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
-        let socket = UdpSocket::bind(socket_addr)
-            .await
-            .expect("Should bind udp socket");
+        let socket = UdpSocket::bind(socket_addr).await?;
 
-        let actual_addr = socket.local_addr().expect("Failed to get local addr");
-        debug!("local socket address: {:?}", actual_addr);
+        let actual_addr = socket.local_addr()?;
+        tracing::debug!("local socket address: {:?}", actual_addr);
 
-        rtc.add_local_candidate(
-            Candidate::host(actual_addr, str0m::net::Protocol::Udp)
-                .expect("Failed to create local candidate"),
-        );
+        rtc.add_local_candidate(Candidate::host(actual_addr, str0m::net::Protocol::Udp)?);
 
         Ok(Self {
             id: uuid::Uuid::new_v4(),
             rtc,
             socket,
             video_mid: None,
+            video_rtp: RtpState::new(),
             buf: [0u8; 1500],
         })
     }
@@ -89,11 +111,9 @@ impl Client {
 
         // Set some default headers based on WHIP protocol
         let mut headers = reqwest::header::HeaderMap::new();
-        headers.append(
-            CONTENT_TYPE,
-            HeaderValue::from_str("application/sdp").unwrap(),
-        );
-        headers.append(ACCEPT, HeaderValue::from_str("application/sdp").unwrap());
+        let header_value = HeaderValue::from_str("application/sdp").unwrap();
+        headers.append(CONTENT_TYPE, header_value.clone());
+        headers.append(ACCEPT, header_value);
 
         let mut buf = Vec::new();
 
@@ -143,108 +163,108 @@ impl Client {
     }
 
     // TODO: refactor to return Result and handle errors in caller
-    pub async fn run(&mut self) -> Result<(), Error> {
-        let timeout = match self.rtc.poll_output().unwrap() {
-            Output::Timeout(timeout) => timeout,
-            Output::Transmit(send) => {
-                if let Err(e) = self.socket.send_to(&send.contents, send.destination).await {
-                    debug!(
-                        "sending to {} => {}, len {} error {:?}",
-                        send.source,
-                        send.destination,
-                        send.contents.len(),
-                        e
-                    );
-                };
-                return Ok(());
+    pub async fn run(&mut self, token: CancellationToken) -> Result<(), Error> {
+        loop {
+            if token.is_cancelled() {
+                tracing::debug!("cancellation requested, exiting client run loop");
+                break;
             }
-            Output::Event(event) => match event {
-                Event::Connected => {
-                    info!("connected");
-                    return Ok(());
+            let timeout = match self.rtc.poll_output().unwrap() {
+                Output::Timeout(timeout) => timeout,
+                Output::Transmit(send) => {
+                    if let Err(e) = self.socket.send_to(&send.contents, send.destination).await {
+                        tracing::debug!(
+                            "sending to {} => {}, len {} error {:?}",
+                            send.source,
+                            send.destination,
+                            send.contents.len(),
+                            e
+                        );
+                    };
+                    continue;
                 }
-                Event::IceConnectionStateChange(state) => {
-                    info!("ice connection state change: {:?}", state);
-                    match state {
-                        IceConnectionState::Disconnected => {
-                            return Err(anyhow::anyhow!("ICE Disconnected"));
-                        }
-                        _ => return Ok(()),
+                Output::Event(event) => match event {
+                    Event::Connected => {
+                        tracing::trace!("connected");
+                        break;
                     }
-                }
-                Event::MediaAdded(media) => {
-                    info!("Media added: {:?}", media);
-                    info!("Codec config: {:?}", self.rtc.codec_config());
-                    return Ok(());
-                }
-                Event::MediaData(data) => {
-                    debug!("Media data: {:?}", data);
-                    return Ok(());
-                }
-                Event::RtpPacket(packet) => {
-                    debug!("RTP packet: {:?}", packet);
-                    return Ok(());
-                }
-                _ => {
-                    return Ok(());
-                }
-            },
-        };
-
-        let duration = timeout - Instant::now();
-        if duration.is_zero() {
-            // Drive time forward in rtc straight away
-            return match self.rtc.handle_input(Input::Timeout(Instant::now())) {
-                Ok(_) => Ok(()),
-                Err(e) => {
-                    error!("error handling input: {:?}", e);
-                    Ok(())
-                }
+                    Event::IceConnectionStateChange(state) => {
+                        tracing::trace!("ice connection state change: {:?}", state);
+                        match state {
+                            IceConnectionState::Disconnected => {
+                                return Err(anyhow::anyhow!("ICE Disconnected"));
+                            }
+                            _ => continue,
+                        }
+                    }
+                    Event::MediaAdded(media) => {
+                        tracing::trace!("Media added: {:?}", media);
+                        tracing::trace!("Codec config: {:?}", self.rtc.codec_config());
+                        continue;
+                    }
+                    Event::MediaData(data) => {
+                        tracing::trace!("Media data: {:?}", data);
+                        continue;
+                    }
+                    Event::RtpPacket(packet) => {
+                        tracing::trace!("RTP packet: {:?}", packet);
+                        continue;
+                    }
+                    _ => {
+                        continue;
+                    }
+                },
             };
-        }
 
-        let input = match tokio::time::timeout(duration, self.socket.recv_from(&mut self.buf)).await
-        {
-            Ok(Ok((n, source))) => {
-                // UDP data received.
-                info!(
-                    "received from {} => {}, len {}",
-                    source,
-                    self.socket.local_addr().unwrap(),
-                    n
-                );
-                self.buf[n..].fill(0); // zero out the rest of the buffer
-                Input::Receive(
-                    Instant::now(),
-                    Receive {
-                        proto: Protocol::Udp,
-                        source,
-                        destination: self.socket.local_addr().unwrap(),
-                        contents: (&self.buf[..n]).try_into().expect("should webrtc"),
-                    },
-                )
+            let duration = timeout - Instant::now();
+            if duration.is_zero() {
+                // Drive time forward in rtc straight away
+                match self.rtc.handle_input(Input::Timeout(Instant::now())) {
+                    Ok(_) => continue,
+                    Err(e) => {
+                        tracing::error!("error handling input: {:?}", e);
+                        break;
+                    }
+                };
             }
-            Ok(Err(e)) => match e.kind() {
-                ErrorKind::ConnectionReset => return Ok(()),
-                _ => {
-                    return Err(anyhow::anyhow!("[TransportWebrtc] network error {:?}", e));
-                }
-            },
-            Err(_e) => Input::Timeout(Instant::now()),
-        };
 
-        // Input is either a Timeout or Receive of data. Both drive the state forward.
-        self.rtc.handle_input(input).unwrap();
+            let input =
+                match tokio::time::timeout(duration, self.socket.recv_from(&mut self.buf)).await {
+                    Ok(Ok((n, source))) => {
+                        // UDP data received.
+                        tracing::trace!(
+                            "received from {} => {}, len {}",
+                            source,
+                            self.socket.local_addr().unwrap(),
+                            n
+                        );
+                        self.buf[n..].fill(0); // zero out the rest of the buffer
+                        Input::Receive(
+                            Instant::now(),
+                            Receive {
+                                proto: Protocol::Udp,
+                                source,
+                                destination: self.socket.local_addr().unwrap(),
+                                contents: (&self.buf[..n]).try_into().expect("should webrtc"),
+                            },
+                        )
+                    }
+                    Ok(Err(e)) => match e.kind() {
+                        ErrorKind::ConnectionReset => return Ok(()),
+                        _ => {
+                            return Err(anyhow::anyhow!("[TransportWebrtc] network error {:?}", e));
+                        }
+                    },
+                    Err(_e) => Input::Timeout(Instant::now()),
+                };
+            // Input is either a Timeout or Receive of data. Both drive the state forward.
+            self.rtc.handle_input(input).unwrap();
+        }
 
         Ok(())
     }
 
-    pub fn send_video(&mut self, receive_channel: &Receiver<Vec<u8>>) -> Result<(), RtcError> {
-        // RTP packaet parameters
-        let seq_no = Arc::new(AtomicU16::new(1));
-        let timestamp = Arc::new(AtomicU32::new(0));
-        let start_time = Instant::now();
-
+    pub fn send_video(&mut self, receive_channel: &mut Receiver<Vec<u8>>) -> Result<(), RtcError> {
         if let Ok(packet) = receive_channel.try_recv() {
             let payload_params = self
                 .rtc
@@ -253,12 +273,7 @@ impl Client {
             if let Some(params) = payload_params {
                 let pt = params.pt();
 
-                let current_seq = seq_no.fetch_add(1, Ordering::Relaxed);
-
-                // Calculate timestamp (90kHz clock for video)
-                let elapsed = start_time.elapsed();
-                let ts = (elapsed.as_millis() * 90) as u32;
-                timestamp.store(ts, Ordering::Relaxed);
+                let (current_seq, ts) = self.video_rtp.next();
 
                 let mut direct_api = self.rtc.direct_api();
                 let stream_tx = direct_api
@@ -266,7 +281,7 @@ impl Client {
                     .unwrap();
                 match stream_tx.write_rtp(
                     pt,
-                    SeqNo::from(current_seq as u64),
+                    current_seq,
                     ts,
                     Instant::now(),
                     false, // not a marker
@@ -275,15 +290,15 @@ impl Client {
                     packet,
                 ) {
                     Ok(_) => {
-                        info!("Sent RTP packet: seq={}, ts={}", current_seq, ts);
+                        tracing::trace!("Sent RTP packet: seq={:?}, ts={}", current_seq, ts);
                     }
                     // TODO: handle specific PacketError cases
                     Err(e) => {
-                        error!("Failed to send RTP packet: {:?}", e);
+                        tracing::error!("Failed to send RTP packet: {:?}", e);
                     }
                 }
             } else {
-                debug!("No payload type found");
+                tracing::debug!("No payload type found");
             }
         }
 

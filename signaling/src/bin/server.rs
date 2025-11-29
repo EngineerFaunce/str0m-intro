@@ -1,77 +1,53 @@
 use axum::extract::State;
-use axum::handler::HandlerWithoutStateExt;
-use axum::http::uri::Authority;
-use axum::http::Uri;
-use axum::response::{Redirect, Response};
+use axum::response::Response;
 use axum::routing::post;
+use axum::Json;
 use axum::Router;
-use axum::{BoxError, Json};
-use axum_extra::extract::Host;
 use axum_server::tls_rustls::RustlsConfig;
 use core::panic;
-use reqwest::StatusCode;
 use signaling::client::Client;
 use std::collections::HashMap;
-use std::future::Future;
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::time::Duration;
 use str0m::change::{SdpAnswer, SdpOffer};
 use tokio::signal;
-use tokio::sync::{Mutex, RwLock};
-use tracing::debug;
+use tokio::sync::mpsc::{self, Receiver, Sender};
+use tokio::task::JoinSet;
+use tokio_util::sync::CancellationToken;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
-use uuid::Uuid;
 
 #[derive(Clone, Copy)]
 struct Ports {
-    http: u16,
     https: u16,
 }
 
 #[derive(Clone)]
 pub struct AppState {
-    pub clients: Arc<RwLock<HashMap<Uuid, Arc<Mutex<Client>>>>>,
+    pub client_channel: Sender<Client>,
 }
 
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<(), anyhow::Error> {
     tracing_subscriber::registry()
         .with(tracing_subscriber::fmt::layer())
         .init();
 
-    let ports = Ports {
-        http: 7878,
-        https: 3000,
-    };
+    let ports = Ports { https: 3000 };
 
-    // Create a handle for our TLS server so the shutdown signal can all shutdown
-    let handle = axum_server::Handle::new();
-    // save the future for easy shutting down of redirect server
-    let shutdown_future = shutdown_signal(handle.clone());
-
-    // optional: spawn a second server to redirect http requests to this server
-    tokio::spawn(redirect_http_to_https(ports, shutdown_future));
-
+    let (tx, rx): (Sender<Client>, mpsc::Receiver<Client>) = mpsc::channel(10);
     let state = AppState {
-        clients: Arc::new(RwLock::new(HashMap::new())),
+        client_channel: tx.clone(),
     };
-
-    // Separate thread to process WHIP/WHEP clients
-    tokio::spawn(process_clients(state.clone()));
+    let token = CancellationToken::new();
 
     // configure certificate and private key used by https
+    let certificate_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("self_signed_certs");
     let config = RustlsConfig::from_pem_file(
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("self_signed_certs")
-            .join("cert.pem"),
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("self_signed_certs")
-            .join("key.pem"),
+        PathBuf::from(&certificate_dir).join("cert.pem"),
+        PathBuf::from(&certificate_dir).join("key.pem"),
     )
-    .await
-    .unwrap();
+    .await?;
 
     let app = Router::new()
         .route("/whip", post(whip))
@@ -79,26 +55,43 @@ async fn main() {
         .route("/whep", post(whep));
 
     let addr = SocketAddr::from(([127, 0, 0, 1], ports.https));
-    tracing::debug!("listening on {addr}");
-    axum_server::bind_rustls(addr, config)
+    let handle = axum_server::Handle::new();
+
+    // * Spawn shutdown signal listener
+    tokio::spawn(shutdown_signal(token.clone()));
+
+    // * Spawn graceful shutdown task
+    // ? Is this okay to have in a structured concurrency context?
+    {
+        let shutdown_handle = handle.clone();
+        let token = token.clone();
+        tokio::spawn(async move {
+            token.cancelled().await;
+            tracing::debug!("Received cancellation request, shutting down web server...");
+            shutdown_handle.graceful_shutdown(Some(Duration::from_secs(10)));
+        });
+    }
+
+    tracing::info!("listening on {addr}");
+    let https_server = axum_server::bind_rustls(addr, config)
         .handle(handle)
-        .serve(app.into_make_service())
-        .await
-        .unwrap();
+        .serve(app.into_make_service());
+
+    let mut set = JoinSet::new();
+    set.spawn(process_clients(rx, token.clone()));
+    set.spawn(https_server);
+
+    set.join_all().await;
+
+    Ok(())
 }
 
 /// WHIP endpoint
 async fn whip(State(state): State<AppState>, Json(payload): Json<SdpOffer>) -> Response<String> {
     let mut client = Client::new().await.expect("Failed to create client");
-
     let answer = client.accept_whip_request(payload).await.unwrap();
 
-    let client_id = Uuid::new_v4();
-    {
-        let mut clients = state.clients.write().await;
-        clients.insert(client_id, Arc::new(Mutex::new(client)));
-        debug!("New client: {:?}", client_id);
-    }
+    state.client_channel.send(client).await.unwrap();
 
     Response::builder()
         .status(201)
@@ -109,42 +102,51 @@ async fn whip(State(state): State<AppState>, Json(payload): Json<SdpOffer>) -> R
 
 /// WHEP endpoint
 async fn whep(Json(payload): Json<SdpOffer>) -> Json<SdpAnswer> {
-    debug!("WHEP endpoint called: {:?}", payload);
+    tracing::info!("WHEP endpoint called: {:?}", payload);
     todo!()
 }
 
-async fn process_clients(state: AppState) {
+async fn process_clients(
+    mut client_channel: Receiver<Client>,
+    token: CancellationToken,
+) -> Result<(), std::io::Error> {
+    let mut clients = HashMap::new();
+    let mut interval = tokio::time::interval(Duration::from_millis(100));
     loop {
-        {
-            let mut targets = Vec::new();
-            {
-                let clients = state.clients.read().await;
-                for (id, client) in clients.iter() {
-                    let client = client.lock().await;
+        tokio::select! {
+            _ = token.cancelled() => {
+                tracing::debug!("Received cancellation request, shutting down SFU...");
+                return Ok(());
+            }
+
+            // * Try and receive a new client
+            client = client_channel.recv() => {
+                match client {
+                    Some(client) => {
+                        tracing::trace!("New client: {:?}", client.id);
+                        clients.insert(client.id, client);
+                    }
+                    None => {
+                        tracing::debug!("Client channel closed, shutting down client processor...");
+                        return Ok(());
+                    }
+                }
+            }
+            _ = interval.tick() => {
+                // * Prune dead clients
+                clients.retain(|id, client| {
                     if !client.rtc.is_alive() {
-                        targets.push(*id);
+                        tracing::trace!("Pruning client: {id}");
+                        false
+                    } else {
+                        true
                     }
-                }
-            }
-
-            {
-                if !targets.is_empty() {
-                    let mut clients = state.clients.write().await;
-                    for id in targets {
-                        debug!("Pruning client: {id}");
-                        clients.remove(&id);
-                    }
-                }
-            }
-
-            let clients = state.clients.read().await;
-            for (_id, client) in clients.iter() {
-                let mut client = client.lock().await;
-                match client.run().await {
-                    Ok(_) => {}
-                    Err(e) => {
-                        debug!("Client ran into error: {:?}", e);
-                        continue;
+                });
+                // * Process each client
+                for (_id, client) in clients.iter_mut() {
+                    if let Err(e) = client.run(token.clone()).await {
+                        // TODO: handle ICE disconnections more gracefully
+                        tracing::debug!("Client ran into error: {:?}", e);
                     }
                 }
             }
@@ -152,7 +154,7 @@ async fn process_clients(state: AppState) {
     }
 }
 
-async fn shutdown_signal(handle: axum_server::Handle) {
+async fn shutdown_signal(token: CancellationToken) {
     let ctrl_c = async {
         signal::ctrl_c()
             .await
@@ -170,60 +172,12 @@ async fn shutdown_signal(handle: axum_server::Handle) {
     #[cfg(not(unix))]
     let terminate = std::future::pending::<()>();
 
+    // TODO: provide a means for the user to shut down the server that isn't just ctrl-c
     tokio::select! {
         _ = ctrl_c => {},
         _ = terminate => {},
     }
 
     tracing::info!("Received termination signal shutting down");
-    handle.graceful_shutdown(Some(Duration::from_secs(10))); // 10 secs is how long docker will wait
-                                                             // to force shutdown
-}
-
-async fn redirect_http_to_https<F>(ports: Ports, signal: F)
-where
-    F: Future<Output = ()> + Send + 'static,
-{
-    fn make_https(host: &str, uri: Uri, https_port: u16) -> Result<Uri, BoxError> {
-        let mut parts = uri.into_parts();
-
-        parts.scheme = Some(axum::http::uri::Scheme::HTTPS);
-
-        if parts.path_and_query.is_none() {
-            parts.path_and_query = Some("/".parse().unwrap());
-        }
-
-        let authority: Authority = host.parse()?;
-        let bare_host = match authority.port() {
-            Some(port_struct) => authority
-                .as_str()
-                .strip_suffix(port_struct.as_str())
-                .unwrap()
-                .strip_suffix(':')
-                .unwrap(), // if authority.port() is Some(port) then we can be sure authority ends with :{port}
-            None => authority.as_str(),
-        };
-
-        parts.authority = Some(format!("{bare_host}:{https_port}").parse()?);
-
-        Ok(Uri::from_parts(parts)?)
-    }
-
-    let redirect = move |Host(host): Host, uri: Uri| async move {
-        match make_https(&host, uri, ports.https) {
-            Ok(uri) => Ok(Redirect::permanent(&uri.to_string())),
-            Err(error) => {
-                tracing::warn!(%error, "failed to convert URI to HTTPS");
-                Err(StatusCode::BAD_REQUEST)
-            }
-        }
-    };
-
-    let addr = SocketAddr::from(([127, 0, 0, 1], ports.http));
-    let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
-    tracing::debug!("listening on {addr}");
-    axum::serve(listener, redirect.into_make_service())
-        .with_graceful_shutdown(signal)
-        .await
-        .unwrap();
+    token.cancel();
 }
