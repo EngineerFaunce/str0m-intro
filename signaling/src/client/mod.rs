@@ -1,12 +1,10 @@
 use anyhow::Error;
 use anyhow::Result;
+use rand::Rng;
 use reqwest::header::{HeaderValue, ACCEPT};
 use reqwest::{header::CONTENT_TYPE, ClientBuilder};
-use tokio::sync::mpsc::Receiver;
 use std::io::ErrorKind;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU16, AtomicU32, Ordering};
-use std::sync::Arc;
 use std::time::Instant;
 use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr},
@@ -37,7 +35,37 @@ pub struct Client {
     pub rtc: Rtc,
     pub socket: UdpSocket,
     video_mid: Option<Mid>,
+    video_rtp: RtpState,
     buf: [u8; 1500],
+}
+
+#[derive(Debug)]
+struct RtpState {
+    seq_no: u16,
+    ts_base: u32,
+    start_time: Instant,
+}
+
+impl RtpState {
+    fn new() -> Self {
+        let mut rng = rand::thread_rng();
+        Self {
+            seq_no: rng.gen::<u16>(),
+            ts_base: rng.gen::<u32>(),
+            start_time: Instant::now(),
+        }
+    }
+
+    fn next(&mut self) -> (SeqNo, u32) {
+        let seq = self.seq_no;
+        self.seq_no = self.seq_no.wrapping_add(1);
+
+        // 90kHz RTP clock for H.264 video
+        let elapsed_90khz = (self.start_time.elapsed().as_micros() * 90) as u32;
+        let ts = self.ts_base.wrapping_add(elapsed_90khz);
+
+        (SeqNo::from(seq as u64), ts)
+    }
 }
 
 impl Client {
@@ -52,23 +80,19 @@ impl Client {
 
         // TODO: for local testing only - both client and server on same machine
         let socket_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
-        let socket = UdpSocket::bind(socket_addr)
-            .await
-            .expect("Should bind udp socket");
+        let socket = UdpSocket::bind(socket_addr).await?;
 
-        let actual_addr = socket.local_addr().expect("Failed to get local addr");
+        let actual_addr = socket.local_addr()?;
         tracing::debug!("local socket address: {:?}", actual_addr);
 
-        rtc.add_local_candidate(
-            Candidate::host(actual_addr, str0m::net::Protocol::Udp)
-                .expect("Failed to create local candidate"),
-        );
+        rtc.add_local_candidate(Candidate::host(actual_addr, str0m::net::Protocol::Udp)?);
 
         Ok(Self {
             id: uuid::Uuid::new_v4(),
             rtc,
             socket,
             video_mid: None,
+            video_rtp: RtpState::new(),
             buf: [0u8; 1500],
         })
     }
@@ -86,11 +110,9 @@ impl Client {
 
         // Set some default headers based on WHIP protocol
         let mut headers = reqwest::header::HeaderMap::new();
-        headers.append(
-            CONTENT_TYPE,
-            HeaderValue::from_str("application/sdp").unwrap(),
-        );
-        headers.append(ACCEPT, HeaderValue::from_str("application/sdp").unwrap());
+        let header_value = HeaderValue::from_str("application/sdp").unwrap();
+        headers.append(CONTENT_TYPE, header_value.clone());
+        headers.append(ACCEPT, header_value);
 
         let mut buf = Vec::new();
 
@@ -237,11 +259,6 @@ impl Client {
     }
 
     pub fn send_video(&mut self, receive_channel: &mut Receiver<Vec<u8>>) -> Result<(), RtcError> {
-        // RTP packaet parameters
-        let seq_no = Arc::new(AtomicU16::new(1));
-        let timestamp = Arc::new(AtomicU32::new(0));
-        let start_time = Instant::now();
-
         if let Ok(packet) = receive_channel.try_recv() {
             let payload_params = self
                 .rtc
@@ -250,12 +267,7 @@ impl Client {
             if let Some(params) = payload_params {
                 let pt = params.pt();
 
-                let current_seq = seq_no.fetch_add(1, Ordering::Relaxed);
-
-                // Calculate timestamp (90kHz clock for video)
-                let elapsed = start_time.elapsed();
-                let ts = (elapsed.as_millis() * 90) as u32;
-                timestamp.store(ts, Ordering::Relaxed);
+                let (current_seq, ts) = self.video_rtp.next();
 
                 let mut direct_api = self.rtc.direct_api();
                 let stream_tx = direct_api
@@ -263,7 +275,7 @@ impl Client {
                     .unwrap();
                 match stream_tx.write_rtp(
                     pt,
-                    SeqNo::from(current_seq as u64),
+                    current_seq,
                     ts,
                     Instant::now(),
                     false, // not a marker
@@ -272,7 +284,7 @@ impl Client {
                     packet,
                 ) {
                     Ok(_) => {
-                        tracing::trace!("Sent RTP packet: seq={}, ts={}", current_seq, ts);
+                        tracing::trace!("Sent RTP packet: seq={:?}, ts={}", current_seq, ts);
                     }
                     // TODO: handle specific PacketError cases
                     Err(e) => {
