@@ -6,8 +6,8 @@ edition = "2021"
 [dependencies]
 anyhow = "1.0.95"
 media = { path = "../media" }
-signaling = { path = "../signaling" }
+rtc = { path = "../rtc" }
 tokio = { version = "1.41.1", features = ["full"] }
+tokio-util = "0.7.16"
 tracing = "0.1.41"
 tracing-subscriber = "0.3.18"
-tokio-util = "0.7.16"

@@ -1,5 +1,5 @@
 use anyhow::Error;
-use signaling::client::Client;
+use rtc::Client;
 use tokio::{
     sync::mpsc::{self, Receiver, Sender},
     task::JoinSet,

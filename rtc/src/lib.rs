@@ -51,8 +51,8 @@ impl RtpState {
     fn new() -> Self {
         let mut rng = rand::thread_rng();
         Self {
-            seq_no: rng.gen::<u16>(),
-            ts_base: rng.gen::<u32>(),
+            seq_no: rng.r#gen::<u16>(),
+            ts_base: rng.r#gen::<u32>(),
             start_time: Instant::now(),
         }
     }
@@ -152,7 +152,7 @@ impl Client {
         Ok(())
     }
 
-    pub async fn accept_whip_request(&mut self, offer: SdpOffer) -> Result<String, RtcError> {
+    pub async fn accept_request(&mut self, offer: SdpOffer) -> Result<String, RtcError> {
         let answer = self
             .rtc
             .sdp_api()
@@ -160,6 +160,61 @@ impl Client {
             .expect("offer to be accepted");
 
         Ok(answer.to_sdp_string())
+    }
+
+    pub async fn make_whep_request(&mut self) -> Result<(), Error> {
+        // WHEP client creates the offer
+        let mut change = self.rtc.sdp_api();
+        self.video_mid = Some(change.add_media(
+            str0m::media::MediaKind::Video,
+            str0m::media::Direction::RecvOnly, // The offer *should* use the recvonly attribute
+            None,
+            None,
+        ));
+        let (offer, pending) = change.apply().unwrap();
+
+        // Set some default headers based on WHEP protocol
+        // ! Is WHEP different?
+        // let mut headers = reqwest::header::HeaderMap::new();
+        // let header_value = HeaderValue::from_str("application/sdp").unwrap();
+        // headers.append(CONTENT_TYPE, header_value.clone());
+        // headers.append(ACCEPT, header_value);
+
+        let mut buf = Vec::new();
+
+        // TODO: should the certificate and key be moved to a more central location?
+        let temp = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("self_signed_certs")
+            .join("cert.pem");
+        let mut file = File::open(temp).await?;
+        let _bytes_read = file.read_to_end(&mut buf).await?;
+        let cert = reqwest::Certificate::from_pem(&buf)?;
+
+        let http_client = ClientBuilder::new()
+            // .default_headers(headers)
+            .add_root_certificate(cert)
+            .build()
+            .unwrap();
+
+        // TODO (future): Will likely need to be updated to accept input of the server's address
+        let base_url = "https://127.0.0.1:3000";
+        let signal_url = format!("{}/whep", base_url);
+
+        // WHEP client makes a POST request to the WHEP endpoint
+        // WHEP endpoint responds with a 201 and SDP answer in the body
+        let answer_string = http_client
+            .post(signal_url)
+            .json(&offer)
+            .send()
+            .await?
+            .text()
+            .await?;
+
+        let answer = SdpAnswer::from_sdp_string(answer_string.as_str()).unwrap();
+
+        self.rtc.sdp_api().accept_answer(pending, answer).unwrap();
+
+        Ok(())
     }
 
     // TODO: refactor to return Result and handle errors in caller

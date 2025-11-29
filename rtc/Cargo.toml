@@ -1,17 +1,13 @@
 [package]
-name = "signaling"
+name = "rtc"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 
 [dependencies]
-axum = { version = "0.8.1", features = [] }
-axum-server = { version = "0.7.2", features = ["tls-rustls"] }
-rtc = { path = "../rtc" }
-rustls = "0.23.19"
-serde = "1.0.217"
-serde_json = "1.0.133"
+anyhow = "1.0.95"
+rand = "0.8"
+reqwest = { version = "0.12.9", features = ["blocking", "json"] }
 str0m = "0.6.3"
-systemstat = "0.2.3"
 tokio = { version = "1.41.1", features = ["full"] }
 tokio-util = "0.7.16"
 tracing = "0.1.41"
