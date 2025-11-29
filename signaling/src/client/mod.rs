@@ -27,6 +27,7 @@ use tokio::fs::File;
 use tokio::io::AsyncReadExt;
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc::Receiver;
+use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 #[derive(Debug)]
@@ -162,98 +163,103 @@ impl Client {
     }
 
     // TODO: refactor to return Result and handle errors in caller
-    pub async fn run(&mut self) -> Result<(), Error> {
-        let timeout = match self.rtc.poll_output().unwrap() {
-            Output::Timeout(timeout) => timeout,
-            Output::Transmit(send) => {
-                if let Err(e) = self.socket.send_to(&send.contents, send.destination).await {
-                    tracing::debug!(
-                        "sending to {} => {}, len {} error {:?}",
-                        send.source,
-                        send.destination,
-                        send.contents.len(),
-                        e
-                    );
-                };
-                return Ok(());
+    pub async fn run(&mut self, token: CancellationToken) -> Result<(), Error> {
+        loop {
+            if token.is_cancelled() {
+                tracing::debug!("cancellation requested, exiting client run loop");
+                break;
             }
-            Output::Event(event) => match event {
-                Event::Connected => {
-                    tracing::trace!("connected");
-                    return Ok(());
+            let timeout = match self.rtc.poll_output().unwrap() {
+                Output::Timeout(timeout) => timeout,
+                Output::Transmit(send) => {
+                    if let Err(e) = self.socket.send_to(&send.contents, send.destination).await {
+                        tracing::debug!(
+                            "sending to {} => {}, len {} error {:?}",
+                            send.source,
+                            send.destination,
+                            send.contents.len(),
+                            e
+                        );
+                    };
+                    continue;
                 }
-                Event::IceConnectionStateChange(state) => {
-                    tracing::trace!("ice connection state change: {:?}", state);
-                    match state {
-                        IceConnectionState::Disconnected => {
-                            return Err(anyhow::anyhow!("ICE Disconnected"));
-                        }
-                        _ => return Ok(()),
+                Output::Event(event) => match event {
+                    Event::Connected => {
+                        tracing::trace!("connected");
+                        break;
                     }
-                }
-                Event::MediaAdded(media) => {
-                    tracing::trace!("Media added: {:?}", media);
-                    tracing::trace!("Codec config: {:?}", self.rtc.codec_config());
-                    return Ok(());
-                }
-                Event::MediaData(data) => {
-                    tracing::trace!("Media data: {:?}", data);
-                    return Ok(());
-                }
-                Event::RtpPacket(packet) => {
-                    tracing::trace!("RTP packet: {:?}", packet);
-                    return Ok(());
-                }
-                _ => {
-                    return Ok(());
-                }
-            },
-        };
-
-        let duration = timeout - Instant::now();
-        if duration.is_zero() {
-            // Drive time forward in rtc straight away
-            return match self.rtc.handle_input(Input::Timeout(Instant::now())) {
-                Ok(_) => Ok(()),
-                Err(e) => {
-                    tracing::error!("error handling input: {:?}", e);
-                    Ok(())
-                }
+                    Event::IceConnectionStateChange(state) => {
+                        tracing::trace!("ice connection state change: {:?}", state);
+                        match state {
+                            IceConnectionState::Disconnected => {
+                                return Err(anyhow::anyhow!("ICE Disconnected"));
+                            }
+                            _ => continue,
+                        }
+                    }
+                    Event::MediaAdded(media) => {
+                        tracing::trace!("Media added: {:?}", media);
+                        tracing::trace!("Codec config: {:?}", self.rtc.codec_config());
+                        continue;
+                    }
+                    Event::MediaData(data) => {
+                        tracing::trace!("Media data: {:?}", data);
+                        continue;
+                    }
+                    Event::RtpPacket(packet) => {
+                        tracing::trace!("RTP packet: {:?}", packet);
+                        continue;
+                    }
+                    _ => {
+                        continue;
+                    }
+                },
             };
-        }
 
-        let input = match tokio::time::timeout(duration, self.socket.recv_from(&mut self.buf)).await
-        {
-            Ok(Ok((n, source))) => {
-                // UDP data received.
-                tracing::trace!(
-                    "received from {} => {}, len {}",
-                    source,
-                    self.socket.local_addr().unwrap(),
-                    n
-                );
-                self.buf[n..].fill(0); // zero out the rest of the buffer
-                Input::Receive(
-                    Instant::now(),
-                    Receive {
-                        proto: Protocol::Udp,
-                        source,
-                        destination: self.socket.local_addr().unwrap(),
-                        contents: (&self.buf[..n]).try_into().expect("should webrtc"),
-                    },
-                )
+            let duration = timeout - Instant::now();
+            if duration.is_zero() {
+                // Drive time forward in rtc straight away
+                match self.rtc.handle_input(Input::Timeout(Instant::now())) {
+                    Ok(_) => continue,
+                    Err(e) => {
+                        tracing::error!("error handling input: {:?}", e);
+                        break;
+                    }
+                };
             }
-            Ok(Err(e)) => match e.kind() {
-                ErrorKind::ConnectionReset => return Ok(()),
-                _ => {
-                    return Err(anyhow::anyhow!("[TransportWebrtc] network error {:?}", e));
-                }
-            },
-            Err(_e) => Input::Timeout(Instant::now()),
-        };
 
-        // Input is either a Timeout or Receive of data. Both drive the state forward.
-        self.rtc.handle_input(input).unwrap();
+            let input =
+                match tokio::time::timeout(duration, self.socket.recv_from(&mut self.buf)).await {
+                    Ok(Ok((n, source))) => {
+                        // UDP data received.
+                        tracing::trace!(
+                            "received from {} => {}, len {}",
+                            source,
+                            self.socket.local_addr().unwrap(),
+                            n
+                        );
+                        self.buf[n..].fill(0); // zero out the rest of the buffer
+                        Input::Receive(
+                            Instant::now(),
+                            Receive {
+                                proto: Protocol::Udp,
+                                source,
+                                destination: self.socket.local_addr().unwrap(),
+                                contents: (&self.buf[..n]).try_into().expect("should webrtc"),
+                            },
+                        )
+                    }
+                    Ok(Err(e)) => match e.kind() {
+                        ErrorKind::ConnectionReset => return Ok(()),
+                        _ => {
+                            return Err(anyhow::anyhow!("[TransportWebrtc] network error {:?}", e));
+                        }
+                    },
+                    Err(_e) => Input::Timeout(Instant::now()),
+                };
+            // Input is either a Timeout or Receive of data. Both drive the state forward.
+            self.rtc.handle_input(input).unwrap();
+        }
 
         Ok(())
     }

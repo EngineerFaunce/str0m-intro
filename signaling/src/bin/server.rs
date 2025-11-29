@@ -33,9 +33,7 @@ async fn main() -> Result<(), anyhow::Error> {
         .with(tracing_subscriber::fmt::layer())
         .init();
 
-    let ports = Ports {
-        https: 3000,
-    };
+    let ports = Ports { https: 3000 };
 
     let (tx, rx): (Sender<Client>, mpsc::Receiver<Client>) = mpsc::channel(10);
     let state = AppState {
@@ -108,7 +106,10 @@ async fn whep(Json(payload): Json<SdpOffer>) -> Json<SdpAnswer> {
     todo!()
 }
 
-async fn process_clients(mut client_channel: Receiver<Client>, token: CancellationToken) -> Result<(), std::io::Error> {
+async fn process_clients(
+    mut client_channel: Receiver<Client>,
+    token: CancellationToken,
+) -> Result<(), std::io::Error> {
     let mut clients = HashMap::new();
     let mut interval = tokio::time::interval(Duration::from_millis(100));
     loop {
@@ -143,7 +144,7 @@ async fn process_clients(mut client_channel: Receiver<Client>, token: Cancellati
                 });
                 // * Process each client
                 for (_id, client) in clients.iter_mut() {
-                    if let Err(e) = client.run().await {
+                    if let Err(e) = client.run(token.clone()).await {
                         // TODO: handle ICE disconnections more gracefully
                         tracing::debug!("Client ran into error: {:?}", e);
                     }
