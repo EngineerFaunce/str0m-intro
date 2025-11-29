@@ -1,8 +1,8 @@
 use anyhow::Result;
 use gstreamer::{self as gst, prelude::*};
 use gstreamer_app::{AppSink, AppSinkCallbacks};
-use tokio::sync::mpsc::Sender;
 use std::time::Duration;
+use tokio::sync::mpsc::Sender;
 use tracing::{debug, error, trace};
 
 pub fn stream_test_video(sender_channel: Sender<Vec<u8>>) -> Result<()> {

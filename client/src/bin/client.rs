@@ -1,6 +1,9 @@
 use anyhow::Error;
 use signaling::client::Client;
-use tokio::{sync::mpsc::{self, Receiver, Sender}, task::JoinSet};
+use tokio::{
+    sync::mpsc::{self, Receiver, Sender},
+    task::JoinSet,
+};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[tokio::main]

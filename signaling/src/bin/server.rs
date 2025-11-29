@@ -1,10 +1,9 @@
 use axum::extract::State;
 use axum::response::Response;
 use axum::routing::post;
-use axum::Router;
 use axum::Json;
+use axum::Router;
 use axum_server::tls_rustls::RustlsConfig;
-use tokio::task::JoinSet;
 use core::panic;
 use signaling::client::Client;
 use std::collections::HashMap;
@@ -14,6 +13,7 @@ use std::time::Duration;
 use str0m::change::{SdpAnswer, SdpOffer};
 use tokio::signal;
 use tokio::sync::mpsc::{self, Receiver, Sender};
+use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
