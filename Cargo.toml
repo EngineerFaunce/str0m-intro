@@ -1,3 +1,3 @@
 [workspace]
-members = ["client", "signaling", "media", "rtc"]
+members = ["client", "server", "media", "rtc"]
 resolver = "2"

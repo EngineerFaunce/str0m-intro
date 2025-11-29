@@ -5,15 +5,13 @@ use axum::Json;
 use axum::Router;
 use axum_server::tls_rustls::RustlsConfig;
 use rtc::Client;
-use core::panic;
-use std::collections::HashMap;
 use std::io::Error;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 use str0m::change::SdpOffer;
 use tokio::signal;
-use tokio::sync::mpsc::{self, Receiver, Sender};
+use tokio::sync::mpsc::{self, Sender};
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -29,7 +27,7 @@ pub struct AppState {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), anyhow::Error> {
+async fn main() -> Result<(), Error> {
     tracing_subscriber::registry()
         .with(tracing_subscriber::fmt::layer())
         .init();
