@@ -1,0 +1,13 @@
+[package]
+name = "client"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0.95"
+media = { path = "../media" }
+signaling = { path = "../signaling" }
+tokio = { version = "1.41.1", features = ["full"] }
+tracing = "0.1.41"
+tracing-subscriber = "0.3.18"
+tokio-util = "0.7.16"
