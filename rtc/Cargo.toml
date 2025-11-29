@@ -11,7 +11,6 @@ str0m = "0.6.3"
 tokio = { version = "1.41.1", features = ["full"] }
 tokio-util = "0.7.16"
 tracing = "0.1.41"
-tracing-subscriber = "0.3.18"
 
 [dependencies.uuid]
 version = "1.11.0"
