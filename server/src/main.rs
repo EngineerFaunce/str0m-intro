@@ -1,3 +1,4 @@
+use anyhow::Result;
 use axum::extract::State;
 use axum::response::Response;
 use axum::routing::post;
@@ -5,7 +6,6 @@ use axum::Json;
 use axum::Router;
 use axum_server::tls_rustls::RustlsConfig;
 use rtc::Client;
-use std::io::Error;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -31,7 +31,7 @@ pub struct AppState {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Error> {
+async fn main() -> Result<()> {
     tracing_subscriber::registry()
         .with(tracing_subscriber::fmt::layer())
         .init();
@@ -77,9 +77,14 @@ async fn main() -> Result<(), Error> {
     }
 
     tracing::info!("listening on {addr}");
-    let https_server = axum_server::bind_rustls(addr, config)
-        .handle(handle)
-        .serve(app.into_make_service());
+    // ! "Stuffing" the awaited server into a separate async block in order to map the error type. Is this appropriate, or is it scuffed?
+    let https_server = async move {
+        axum_server::bind_rustls(addr, config)
+            .handle(handle)
+            .serve(app.into_make_service())
+            .await
+            .map_err(anyhow::Error::from)
+    };
 
     let mut set = JoinSet::new();
     set.spawn(process_clients(rx, token.clone()));
@@ -112,6 +117,7 @@ async fn whip(State(state): State<AppState>, Json(payload): Json<SdpOffer>) -> R
 }
 
 /// WHEP endpoint
+// TODO: accept a session ID to identify the session to attach to. I imagine this will come after the "global" phase of the project. For now, it's one big RTC session.
 async fn whep(State(state): State<AppState>, Json(payload): Json<SdpOffer>) -> Response<String> {
     let mut client = Client::new().await.expect("Failed to create client");
     let answer = client.accept_request(payload).await.unwrap();
