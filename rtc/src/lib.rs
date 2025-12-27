@@ -1,32 +1,28 @@
 use anyhow::Error;
 use anyhow::Result;
-use anyhow::anyhow;
-use reqwest::header::{HeaderValue, ACCEPT};
-use reqwest::{header::CONTENT_TYPE, ClientBuilder};
-use std::io::ErrorKind;
+use reqwest::header::{ACCEPT, HeaderValue};
+use reqwest::{ClientBuilder, header::CONTENT_TYPE};
 use std::path::PathBuf;
 use std::time::Instant;
 use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr},
     time::Duration,
 };
-use str0m::format::Codec;
-use str0m::media::Mid;
-use str0m::net::{Protocol, Receive};
-use str0m::rtp::ExtensionValues;
 use str0m::Event;
 use str0m::IceConnectionState;
-use str0m::Input;
 use str0m::Output;
+use str0m::format::Codec;
+use str0m::media::Mid;
+use str0m::rtp::ExtensionValues;
+use str0m::rtp::RtpPacket;
 use str0m::{
-    change::{SdpAnswer, SdpOffer},
     Candidate, Rtc, RtcError,
+    change::{SdpAnswer, SdpOffer},
 };
 use tokio::fs::File;
 use tokio::io::AsyncReadExt;
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc::Receiver;
-use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use crate::rtp_state::RtpState;
@@ -148,11 +144,10 @@ impl Client {
         let (offer, pending) = change.apply().unwrap();
 
         // Set some default headers based on WHEP protocol
-        // ! Is WHEP different?
         let mut headers = reqwest::header::HeaderMap::new();
-        // let header_value = HeaderValue::from_str("application/sdp").unwrap();
-        // headers.append(CONTENT_TYPE, header_value.clone());
-        // headers.append(ACCEPT, header_value);
+        let header_value = HeaderValue::from_str("application/sdp").unwrap();
+        headers.append(CONTENT_TYPE, header_value.clone());
+        headers.append(ACCEPT, header_value);
 
         let mut buf = Vec::new();
 
@@ -191,127 +186,111 @@ impl Client {
         Ok(())
     }
 
-    /// 
-    pub async fn run(&mut self, token: CancellationToken) -> Result<(), Error> {
-        loop {
-            // * Poll output until we get a timeout. Timeout means we are either awaiting UDP socket input or the timeout to happen.
-            let timeout = match self.rtc.poll_output().unwrap() {
-                // * Stop polling when we get a timeout
-                Output::Timeout(timeout) => timeout,
+    async fn handle_output(&mut self, output: Output) -> Propagated {
+        match output {
+            // * Stop polling when we get a timeout
+            Output::Timeout(timeout) => Propagated::Timeout(timeout),
 
-                // * Transmit this data to the remote peer
-                Output::Transmit(send) => {
-                    if let Err(e) = self.socket.send_to(&send.contents, send.destination).await {
-                        tracing::warn!(
-                            "sending to {} => {}, len {} error {:?}",
-                            send.source,
-                            send.destination,
-                            send.contents.len(),
-                            e
-                        );
-                    };
-                    continue;
-                }
-                Output::Event(event) => match event {
-                    Event::Connected => {
-                        tracing::trace!("ICE connected and established DTLS.");
-                        break;
-                    }
-                    Event::IceConnectionStateChange(state) => {
-                        match state {
-                            IceConnectionState::Disconnected => {
-                                tracing::trace!("ICE disconnected");
-                                // TODO: should we error/break here?
-                                continue;
-                            },
-                            IceConnectionState::New => {
-                                tracing::trace!("ICE new");
-                                continue;
-                            },
-                            IceConnectionState::Checking => {
-                                tracing::trace!("ICE checking");
-                                continue;
-                            },
-                            IceConnectionState::Connected => {
-                                tracing::trace!("ICE connected");
-                                continue;
-                            },
-                            IceConnectionState::Completed => {
-                                tracing::trace!("ICE complete");
-                                continue;
-                            },
-                        }
-                    }
-                    Event::MediaAdded(media) => {
-                        tracing::trace!("Media added: {:?}", media);
-                        tracing::trace!("Codec config: {:?}", self.rtc.codec_config());
-                        continue;
-                    }
-                    Event::MediaData(data) => {
-                        tracing::trace!("Media data: {:?}", data);
-                        continue;
-                    }
-                    Event::RtpPacket(packet) => {
-                        tracing::trace!("RTP packet: {:?}", packet);
-                        continue;
-                    }
-                    _ => {
-                        continue;
-                    }
-                },
-            };
-
-            // * Duration until timeout
-            let duration = timeout - Instant::now();
-
-            // * If the duration is zero, drive time forward in rtc straight away
-            if duration.is_zero() {
-                match self.rtc.handle_input(Input::Timeout(Instant::now())) {
-                    Ok(_) => continue,
-                    Err(e) => {
-                        panic!("error handling input when duration is zero: {:?}", e);
-                    }
+            // * Transmit this data to the remote peer
+            Output::Transmit(send) => {
+                if let Err(e) = self.socket.send_to(&send.contents, send.destination).await {
+                    tracing::warn!(
+                        "sending to {} => {}, len {} error {:?}",
+                        send.source,
+                        send.destination,
+                        send.contents.len(),
+                        e
+                    );
                 };
+                Propagated::Noop
             }
-
-            // * "Create" the input for the RTC state. This is either by recieving from the UDP socket or by timing out.
-            let input = tokio::select! {
-                _ = token.cancelled() => break,
-                res = tokio::time::timeout(duration, self.socket.recv_from(&mut self.buf)) => {
-                    match res {
-                        Ok(Ok((n, source))) => {
-                            self.buf[n..].fill(0);
-                            Input::Receive(Instant::now(), Receive {
-                                proto: Protocol::Udp,
-                                source,
-                                destination: self.socket.local_addr()?,
-                                contents: (&self.buf[..n]).try_into()?
-                            })
-                        }
-                        Ok(Err(e)) => match e.kind() {
-                            ErrorKind::TimedOut => Input::Timeout(Instant::now()),
-                            _ => {
-                                tracing::error!("error: {:?}", e);
-                                return Err(anyhow!("error receiving from UDP socket: {:?}", e));
-                            }
-                        },
-                        Err(_) => Input::Timeout(Instant::now()),
-                    }
+            Output::Event(event) => match event {
+                Event::Connected => {
+                    tracing::trace!("ICE connected and established DTLS.");
+                    Propagated::Noop
                 }
-            };
-            
-            // * Drive the state forward with the input.
-            self.rtc.handle_input(input).unwrap();
+                Event::IceConnectionStateChange(state) => match state {
+                    IceConnectionState::Disconnected => {
+                        tracing::trace!("ICE disconnected");
+                        self.rtc.disconnect();
+                        Propagated::Noop
+                    }
+                    _ => Propagated::Noop,
+                },
+                Event::MediaAdded(media) => {
+                    tracing::trace!("Media added: {:?}", media);
+                    tracing::trace!("Codec config: {:?}", self.rtc.codec_config());
+                    Propagated::Noop
+                }
+                // Event::MediaData(data) => {
+                //     tracing::trace!("Media data: {:?}", data);
+                //     // continue;
+                // }
+                Event::RtpPacket(packet) => {
+                    tracing::trace!("RTP packet: {:?}", packet);
+                    Propagated::RtpPacket(self.id, packet)
+                }
+                _ => Propagated::Noop,
+            },
         }
-
-        Ok(())
     }
 
-    pub fn send_video(&mut self, rtp_video_channel: &mut Receiver<Vec<u8>>) -> Result<(), RtcError> {
+    // pub async fn run(&mut self, token: CancellationToken) -> Result<(), Error> {
+    //     loop {
+    //         // * Poll output until we get a timeout. Timeout means we are either awaiting UDP socket input or the timeout to happen.
+    //         // * Duration until timeout
+    //         let duration = timeout - Instant::now();
+
+    //         // * If the duration is zero, drive time forward in rtc straight away
+    //         if duration.is_zero() {
+    //             match self.rtc.handle_input(Input::Timeout(Instant::now())) {
+    //                 Ok(_) => continue,
+    //                 Err(e) => {
+    //                     panic!("error handling input when duration is zero: {:?}", e);
+    //                 }
+    //             };
+    //         }
+
+    //         // * "Create" the input for the RTC state. This is either by recieving from the UDP socket or by timing out.
+    //         let input = tokio::select! {
+    //             _ = token.cancelled() => break,
+    //             res = tokio::time::timeout(duration, self.socket.recv_from(&mut self.buf)) => {
+    //                 match res {
+    //                     Ok(Ok((n, source))) => {
+    //                         self.buf[n..].fill(0);
+    //                         Input::Receive(Instant::now(), Receive {
+    //                             proto: Protocol::Udp,
+    //                             source,
+    //                             destination: self.socket.local_addr()?,
+    //                             contents: (&self.buf[..n]).try_into()?
+    //                         })
+    //                     }
+    //                     Ok(Err(e)) => match e.kind() {
+    //                         ErrorKind::TimedOut => Input::Timeout(Instant::now()),
+    //                         _ => {
+    //                             tracing::error!("error: {:?}", e);
+    //                             return Err(anyhow!("error receiving from UDP socket: {:?}", e));
+    //                         }
+    //                     },
+    //                     Err(_) => Input::Timeout(Instant::now()),
+    //                 }
+    //             }
+    //         };
+
+    //         // * Drive the state forward with the input.
+    //         self.rtc.handle_input(input).unwrap();
+    //     }
+
+    //     Ok(())
+    // }
+
+    pub fn send_video(
+        &mut self,
+        rtp_video_channel: &mut Receiver<Vec<u8>>,
+    ) -> Result<(), RtcError> {
         // * When there is a video RTP packet to send
         if let Ok(packet) = rtp_video_channel.try_recv() {
-
-            // * Get the parameters for the payload type that 
+            // * Get the parameters for the payload type that
             let payload_params = self
                 .rtc
                 .codec_config()
@@ -353,4 +332,12 @@ impl Client {
 
         Ok(())
     }
+}
+
+///
+#[derive(Debug)]
+enum Propagated {
+    Noop,
+    Timeout(Instant),
+    RtpPacket(Uuid, RtpPacket),
 }

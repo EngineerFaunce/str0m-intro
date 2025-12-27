@@ -59,9 +59,9 @@ async fn run_client_loop(
 ) -> Result<(), Error> {
     loop {
         tokio::select! {
-            res = client.run(token.clone()) => {
-                res?;
-            }
+            // res = client.run(token.clone()) => {
+            //     res?;
+            // }
             _ = token.cancelled() => break,
         }
 

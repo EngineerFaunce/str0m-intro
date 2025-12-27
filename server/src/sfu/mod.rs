@@ -18,13 +18,13 @@ pub struct SessionClient {
 }
 
 #[derive(Default)]
-struct SessionRegistry {
+struct Session {
     publisher: Option<Client>,
     // TODO: create a limit on number of subscribers?
     subscribers: HashMap<Uuid, Client>,
 }
 
-impl SessionRegistry {
+impl Session {
     pub fn add(&mut self, session_client: SessionClient) {
         match session_client.kind {
             SessionKind::Whip => {
@@ -57,10 +57,8 @@ impl SessionRegistry {
             self.publisher = None;
         }
 
-        // TODO: should likely remove subscribers if there is no publisher
-
         self.subscribers.retain(|id, client| {
-            if !client.rtc.is_alive() {
+            if !client.rtc.is_alive() || self.publisher.is_none() {
                 tracing::trace!("Pruning subscriber: {id}");
                 false
             } else {
@@ -69,45 +67,40 @@ impl SessionRegistry {
         });
     }
 
-    pub async fn drive_clients(&mut self, token: CancellationToken) {
+    /// Drive the state of the session.
+    pub async fn drive_state(&mut self, token: CancellationToken) {
         if let Some(publisher) = self.publisher.as_mut() {
-            if let Err(e) = publisher.run(token.clone()).await {
-                tracing::debug!("Publisher encountered error: {:?}", e);
-            }
+            // TODO: Poll the publisher for any RTP packets, or a timeout
         }
+
+        // TODO: call method to forward media from publisher to subscribers.
 
         for (id, client) in self.subscribers.iter_mut() {
-            if let Err(e) = client.run(token.clone()).await {
-                tracing::debug!("Subscriber {id} encountered error: {:?}", e);
-            }
+            // TODO: Poll the subscribers until timeout
         }
     }
-
-    // TODO: implement receiving media from publisher and forwarding to subscribers
-
 }
 
 pub async fn process_clients(
     mut client_channel: Receiver<SessionClient>,
     token: CancellationToken,
 ) -> Result<(), Error> {
-    let mut sessions = SessionRegistry::default();
     // TODO: Is this needed, or is it hindering performance?
     let mut interval = tokio::time::interval(Duration::from_millis(100));
 
+    // TODO: rework this logic to handle multiple sessions.
+    // I'm thinking that this "main" SFU loop will simply await token cancellation
+    // and spawn off new tasks for each session. The sessions will need a channel
+    // in order to "send" subscribers to it to start processing.
+    // Remember structured concurrency.
     loop {
         tokio::select! {
-            _ = token.cancelled() => {
-                tracing::debug!("Received cancellation request, shutting down SFU...");
-                return Ok(());
-            }
-
             // * Try and receive a new client
             client = client_channel.recv() => {
                 match client {
                     Some(session_client) => {
                         tracing::info!("New client: {:?} ({:?})", session_client.client.id, session_client.kind);
-                        sessions.add(session_client);
+                        // TODO: spawn a session here
                     }
                     None => {
                         tracing::trace!("Client channel closed, shutting down client processor...");
@@ -116,14 +109,9 @@ pub async fn process_clients(
                     }
                 }
             }
-            // * On each tick, prune dead clients and drive the state of remaining clients
-            _ = interval.tick() => {
-                sessions.prune();
-                sessions.drive_clients(token.clone()).await;
-                // TODO: call method to forward media from publisher to subscribers.
-                // ? Is this the actual right place, or should this be a sibling task that is constantly looping? 
-                // ? It would if we were going to somehow limit the time we spend forwarding media.
-                // ? Should likely review structured concurrency principles and a typical SFU architecture.
+            _ = token.cancelled() => {
+                tracing::debug!("Received cancellation request, shutting down SFU...");
+                return Ok(());
             }
         }
     }
