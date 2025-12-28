@@ -1,9 +1,9 @@
 use anyhow::Result;
+use axum::Json;
+use axum::Router;
 use axum::extract::State;
 use axum::response::Response;
 use axum::routing::post;
-use axum::Json;
-use axum::Router;
 use axum_server::tls_rustls::RustlsConfig;
 use rtc::Client;
 use std::net::SocketAddr;
@@ -90,6 +90,7 @@ async fn main() -> Result<()> {
     set.spawn(process_clients(rx, token.clone()));
     set.spawn(https_server);
 
+    // TODO: refactor to a looped join_next() so we can handle errors
     set.join_all().await;
 
     Ok(())
@@ -117,19 +118,22 @@ async fn whip(State(state): State<AppState>, Json(payload): Json<SdpOffer>) -> R
 }
 
 /// WHEP endpoint
-// TODO: accept a session ID to identify the session to attach to. I imagine this will come after the "global" phase of the project. For now, it's one big RTC session.
+// TODO: accept a session ID to identify the session to attach to.
 async fn whep(State(state): State<AppState>, Json(payload): Json<SdpOffer>) -> Response<String> {
+    // TODO: before even creating a new client, check that the session is valid
+
     let mut client = Client::new().await.expect("Failed to create client");
     let answer = client.accept_request(payload).await.unwrap();
 
-    state
-        .client_channel
-        .send(SessionClient {
-            client,
-            kind: SessionKind::Whep,
-        })
-        .await
-        .unwrap();
+    // TODO:
+    // state
+    //     .client_channel
+    //     .send(SessionClient {
+    //         client,
+    //         kind: SessionKind::Whep,
+    //     })
+    //     .await
+    //     .unwrap();
 
     Response::builder()
         .status(201)
@@ -162,6 +166,6 @@ async fn shutdown_signal(token: CancellationToken) {
         _ = terminate => {},
     }
 
-    tracing::info!("Received termination signal shutting down");
+    tracing::info!("Received termination signal. Initiating shutdown.");
     token.cancel();
 }
