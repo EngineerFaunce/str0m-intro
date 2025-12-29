@@ -16,7 +16,7 @@ use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-use crate::sfu::{SessionClient, SessionKind, process_clients};
+use crate::sfu::process_clients;
 
 mod sfu;
 
@@ -112,7 +112,7 @@ async fn whip(State(state): State<AppState>, Json(payload): Json<SdpOffer>) -> R
 
     Response::builder()
         .status(201)
-        .header("Location", "/")
+        .header("Location", "/") // TODO: should point to the newly created resource, but where is that?
         .body(answer)
         .unwrap()
 }
@@ -137,7 +137,7 @@ async fn whep(State(state): State<AppState>, Json(payload): Json<SdpOffer>) -> R
 
     Response::builder()
         .status(201)
-        .header("Location", "/")
+        .header("Location", "/") // TODO: should point to the newly created resource, but where is that?
         .body(answer)
         .unwrap()
 }
