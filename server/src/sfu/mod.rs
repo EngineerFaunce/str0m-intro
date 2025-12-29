@@ -6,17 +6,6 @@ use tokio::sync::mpsc::Receiver;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-#[derive(Debug, Clone, Copy)]
-pub enum SessionKind {
-    Whip,
-    Whep,
-}
-
-pub struct SessionClient {
-    pub client: Client,
-    pub kind: SessionKind,
-}
-
 struct Session {
     publisher: Client,
     // TODO: create a limit on number of subscribers?
@@ -24,6 +13,13 @@ struct Session {
 }
 
 impl Session {
+    pub fn new(publisher: Client) -> Self {
+        Self {
+            publisher,
+            subscribers: HashMap::new(),
+        }
+    }
+
     // pub fn add(&mut self, session_client: SessionClient) {
     //     match session_client.kind {
     //         SessionKind::Whip => {
