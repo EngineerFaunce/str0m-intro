@@ -32,13 +32,43 @@ pub struct AppState {
     session_tx: Sender<Session>,
 }
 
+mod session_tracking {
+    use anyhow::Error;
+    use tokio::sync::mpsc::{self, Receiver, Sender};
+
+    use crate::sfu::Session;
+
+    /// The type of data to be sent to the actor.
+    type Message = Session;
+    /// A handle for our custom actor
+    type Handle = Sender<Message>;
+
+    /// Custom actor that keeps track of sessions by communicating with the web handler(s) and SFU process.
+    struct SessionTracker(Receiver<Message>);
+
+    impl SessionTracker {
+        /// Create a new actor instance
+        fn new() -> (Self, Handle) {
+            let (sender, receiver) = mpsc::channel(100);
+            (Self(receiver), sender)
+        }
+
+        /// Listen for messages and act on them
+        async fn run(&mut self) -> Result<(), Error> {
+            // self.0.c
+            Ok(())
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::registry()
         .with(tracing_subscriber::fmt::layer())
         .init();
 
-    let (tx, rx): (Sender<Session>, mpsc::Receiver<Session>) = mpsc::channel(10);
+    // Channel for sending sessions to SFU
+    let (tx, rx): (Sender<Session>, Receiver<Session>) = mpsc::channel(10);
     let state = AppState {
         session_tx: tx.clone(),
     };
