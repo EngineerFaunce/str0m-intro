@@ -36,7 +36,6 @@ pub struct Client {
     pub socket: UdpSocket,
     video_mid: Option<Mid>,
     video_rtp: RtpState,
-    buf: [u8; 1500],
 }
 
 impl Client {
@@ -64,7 +63,6 @@ impl Client {
             socket,
             video_mid: None,
             video_rtp: RtpState::new(),
-            buf: [0u8; 1500],
         })
     }
 
@@ -209,14 +207,11 @@ impl Client {
                     tracing::trace!("ICE connected and established DTLS.");
                     Propagated::Noop
                 }
-                Event::IceConnectionStateChange(state) => match state {
-                    IceConnectionState::Disconnected => {
-                        tracing::trace!("ICE disconnected");
-                        self.rtc.disconnect();
-                        Propagated::Noop
-                    }
-                    _ => Propagated::Noop,
-                },
+                Event::IceConnectionStateChange(IceConnectionState::Disconnected) => {
+                    tracing::trace!("ICE disconnected");
+                    self.rtc.disconnect();
+                    Propagated::Noop
+                }
                 Event::MediaAdded(media) => {
                     tracing::trace!("Media added: {:?}", media);
                     tracing::trace!("Codec config: {:?}", self.rtc.codec_config());
@@ -334,7 +329,6 @@ impl Client {
     }
 }
 
-///
 #[derive(Debug)]
 enum Propagated {
     Noop,

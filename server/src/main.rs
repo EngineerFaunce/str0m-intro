@@ -1,4 +1,5 @@
 use anyhow::Result;
+use async_channel::{self as channel, Receiver, Sender};
 use axum::Json;
 use axum::Router;
 use axum::extract::State;
@@ -6,20 +7,22 @@ use axum::response::Response;
 use axum::routing::post;
 use axum_server::tls_rustls::RustlsConfig;
 use rtc::Client;
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 use str0m::change::SdpOffer;
 use tokio::signal;
-use tokio::sync::mpsc::{self, Receiver, Sender};
+use tokio::sync::mpsc::UnboundedSender;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+use uuid::Uuid;
 
-use crate::sfu::Session;
+use crate::session::Session;
 use crate::sfu::process_sessions;
 
+mod session;
 mod sfu;
 
 #[derive(Clone, Copy)]
@@ -30,35 +33,7 @@ struct Ports {
 #[derive(Clone)]
 pub struct AppState {
     session_tx: Sender<Session>,
-}
-
-mod session_tracking {
-    use anyhow::Error;
-    use tokio::sync::mpsc::{self, Receiver, Sender};
-
-    use crate::sfu::Session;
-
-    /// The type of data to be sent to the actor.
-    type Message = Session;
-    /// A handle for our custom actor
-    type Handle = Sender<Message>;
-
-    /// Custom actor that keeps track of sessions by communicating with the web handler(s) and SFU process.
-    struct SessionTracker(Receiver<Message>);
-
-    impl SessionTracker {
-        /// Create a new actor instance
-        fn new() -> (Self, Handle) {
-            let (sender, receiver) = mpsc::channel(100);
-            (Self(receiver), sender)
-        }
-
-        /// Listen for messages and act on them
-        async fn run(&mut self) -> Result<(), Error> {
-            // self.0.c
-            Ok(())
-        }
-    }
+    session_registry: HashMap<Uuid, UnboundedSender<Client>>,
 }
 
 #[tokio::main]
@@ -68,9 +43,10 @@ async fn main() -> Result<()> {
         .init();
 
     // Channel for sending sessions to SFU
-    let (tx, rx): (Sender<Session>, Receiver<Session>) = mpsc::channel(10);
+    let (session_tx, session_rx): (Sender<Session>, Receiver<Session>) = channel::bounded(10);
     let state = AppState {
-        session_tx: tx.clone(),
+        session_tx: session_tx.clone(),
+        session_registry: HashMap::new(),
     };
 
     // configure certificate and private key used by https
@@ -119,7 +95,7 @@ async fn main() -> Result<()> {
 
     let mut set = JoinSet::new();
     // TODO: spawn an actor that will handle session tracking information. Will need to clone handles to app state and SFU
-    set.spawn(process_sessions(rx, token.clone()));
+    set.spawn(process_sessions(session_rx, token.clone()));
     set.spawn(https_server);
 
     // TODO: refactor to a looped join_next() so we can handle errors
@@ -133,12 +109,13 @@ async fn whip(State(state): State<AppState>, Json(payload): Json<SdpOffer>) -> R
     let mut client = Client::new().await.expect("Failed to create client");
     let answer = client.accept_request(payload).await.unwrap();
 
-    let session = Session::new(client);
+    let (session, subscriber_channel) = Session::new(client);
+    let id = session.id.clone();
     state.session_tx.send(session).await.unwrap();
 
     Response::builder()
         .status(201)
-        .header("Location", "/") // TODO: should point to the newly created resource, but where is that?
+        .header("Location", "/") // TODO: should point to the newly created resource, but where is that? I think this would be the client/session ID so that a DELETE request could end the session
         .body(answer)
         .unwrap()
 }

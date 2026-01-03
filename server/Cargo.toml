@@ -5,8 +5,10 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1.0.95"
+async-channel = "2.5.0"
 axum = { version = "0.8.1", features = [] }
 axum-server = { version = "0.7.2", features = ["tls-rustls"] }
+futures-concurrency = "7.6.3"
 rtc = { path = "../rtc" }
 rustls = "0.23.19"
 serde = "1.0.217"
