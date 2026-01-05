@@ -16,6 +16,8 @@ async fn main() -> Result<(), Error> {
     let mut client = Client::new().await.expect("Failed to create client");
 
     client.make_whip_request().await?;
+    // TODO: remove me
+    return Ok(());
 
     // * Channel for RTP packets
     let (tx, rx): (Sender<Vec<u8>>, Receiver<Vec<u8>>) = mpsc::channel(5);
@@ -23,9 +25,7 @@ async fn main() -> Result<(), Error> {
     let mut set = JoinSet::new();
 
     set.spawn_blocking(move || media::stream_test_video(tx));
-
-    let client_token = token.clone();
-    set.spawn(run_client_loop(client, rx, client_token));
+    set.spawn(run_client_loop(client, rx, token.clone()));
 
     let mut failure: Option<Error> = None;
     while let Some(result) = set.join_next().await {
