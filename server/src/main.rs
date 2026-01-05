@@ -8,21 +8,19 @@ use axum::routing::get;
 use axum::routing::post;
 use axum_server::tls_rustls::RustlsConfig;
 use rtc::Client;
-use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::time::Duration;
 use str0m::change::SdpOffer;
 use tokio::signal;
-use tokio::sync::RwLock;
-use tokio::sync::mpsc::UnboundedSender;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use uuid::Uuid;
 
 use crate::session::Session;
+use crate::session::tracking::Message;
+use crate::session::tracking::SessionTracker;
 use crate::sfu::process_sessions;
 
 mod session;
@@ -36,7 +34,7 @@ struct Ports {
 #[derive(Clone)]
 pub struct AppState {
     session_tx: Sender<Session>,
-    session_registry: Arc<RwLock<HashMap<Uuid, UnboundedSender<Client>>>>,
+    session_tracker: Sender<Message>,
 }
 
 #[tokio::main]
@@ -46,10 +44,11 @@ async fn main() -> Result<()> {
         .init();
 
     // Channel for sending sessions to SFU
+    let (mut session_tracker, session_tracker_handle) = SessionTracker::new();
     let (session_tx, session_rx): (Sender<Session>, Receiver<Session>) = channel::bounded(10);
     let state = AppState {
-        session_tx: session_tx.clone(),
-        session_registry: Arc::new(RwLock::new(HashMap::new())),
+        session_tx,
+        session_tracker: session_tracker_handle,
     };
 
     // configure certificate and private key used by https
@@ -99,9 +98,10 @@ async fn main() -> Result<()> {
     };
 
     let mut set = JoinSet::new();
-    // TODO: spawn an actor that will handle session tracking information. Will need to clone handles to app state and SFU
     set.spawn(process_sessions(session_rx, token.clone()));
     set.spawn(https_server);
+    // TODO: why does adding the async move (and .await) here fix the lifetime error?
+    set.spawn(async move { session_tracker.run().await });
 
     // TODO: refactor to a looped join_next() so we can handle errors
     set.join_all().await;
@@ -114,11 +114,9 @@ async fn whip(State(state): State<AppState>, Json(payload): Json<SdpOffer>) -> R
     let mut client = Client::new().await.expect("Failed to create client");
     let answer = client.accept_request(payload).await.unwrap();
 
-    // TODO: does it make sense for the HTTP server to handle session tracking?
-    // or should we offload that to an actor that keeps track of them?
     let (session, subscriber_channel) = Session::new(client);
-    let mut session_registry = state.session_registry.write().await;
-    session_registry.insert(session.id.clone(), subscriber_channel);
+
+    // TODO: send message to session tracker actor
 
     state.session_tx.send(session).await.unwrap();
 
@@ -130,15 +128,15 @@ async fn whip(State(state): State<AppState>, Json(payload): Json<SdpOffer>) -> R
 }
 
 async fn session_list(State(state): State<AppState>) -> Json<Vec<Uuid>> {
-    let session_registry = state.session_registry.read().await;
-    let session_ids: Vec<Uuid> = session_registry.keys().copied().collect();
-    Json(session_ids)
+    todo!("implement me")
+    // let session_registry = state.session_registry.read().await;
+    // let session_ids: Vec<Uuid> = session_registry.keys().copied().collect();
+    // Json(session_ids)
 }
 
 /// WHEP endpoint
 async fn whep(State(state): State<AppState>, Json(payload): Json<SdpOffer>) -> Response<String> {
     // TODO: before even creating a new client, check that the session is valid
-    let _session_registry = state.session_registry.read().await;
 
     let mut client = Client::new().await.expect("Failed to create client");
     let answer = client.accept_request(payload).await.unwrap();

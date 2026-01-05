@@ -59,14 +59,14 @@ impl Session {
     }
 }
 
-mod tracking {
+pub mod tracking {
     use anyhow::Result;
     use async_channel::{self as channel, Receiver, Sender};
     use futures_concurrency::prelude::*;
     use uuid::Uuid;
 
     /// Message types to be sent to/from the session tracker
-    enum Message {
+    pub enum Message {
         Created(Uuid),
         Ended(Uuid),
     }
@@ -75,25 +75,23 @@ mod tracking {
     type Handle = Sender<Message>;
 
     /// Custom actor for tracking session activity
-    struct SessionTracker(Receiver<Message>);
+    pub struct SessionTracker(Receiver<Message>);
 
     impl SessionTracker {
         /// Create a new actor instance
-        fn new() -> (Self, Handle) {
+        pub fn new() -> (Self, Handle) {
             let (sender, receiver) = channel::bounded(100);
             (Self(receiver), sender)
         }
 
         /// Listen for messages and act on them
-        async fn run(&mut self) -> Result<()> {
-            self.0
-                .co()
-                .try_for_each(|msg| async {
-                    todo!("figure this out");
-                    // handle_message(msg).await?;
-                    // Ok(())
-                })
-                .await?;
+        pub async fn run(&mut self) -> Result<()> {
+            // self.0
+            //     .co()
+            //     .try_for_each(|msg| async {
+            //         todo!("handle message here");
+            //     })
+            //     .await;
             Ok(())
         }
     }
