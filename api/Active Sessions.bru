@@ -1,0 +1,79 @@
+meta {
+  name: Active Sessions
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{base-url}}/sessions
+  body: none
+  auth: inherit
+}
+
+settings {
+  encodeUrl: true
+  timeout: 0
+}
+
+example {
+  name: No active sessions
+  
+  request: {
+    url: https://localhost:3000/sessions
+    method: GET
+    mode: none
+  }
+  
+  response: {
+    headers: {
+      content-type: application/json
+      content-length: 2
+      date: Mon, 05 Jan 2026 01:01:35 GMT
+    }
+  
+    status: {
+      code: 200
+      text: OK
+    }
+  
+    body: {
+      type: json
+      content: '''
+        []
+      '''
+    }
+  }
+}
+
+example {
+  name: available sessions
+  description: Returns a list of session IDs.
+  
+  request: {
+    url: {{base-url}}/sessions
+    method: GET
+    mode: none
+  }
+  
+  response: {
+    headers: {
+      content-type: application/json
+      content-length: 40
+      date: Mon, 05 Jan 2026 01:24:51 GMT
+    }
+  
+    status: {
+      code: 200
+      text: OK
+    }
+  
+    body: {
+      type: json
+      content: '''
+        [
+          "f3a64d14-3393-4c0b-b692-c6fd5771e793"
+        ]
+      '''
+    }
+  }
+}
