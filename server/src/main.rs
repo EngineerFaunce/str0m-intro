@@ -4,15 +4,18 @@ use axum::Json;
 use axum::Router;
 use axum::extract::State;
 use axum::response::Response;
+use axum::routing::get;
 use axum::routing::post;
 use axum_server::tls_rustls::RustlsConfig;
 use rtc::Client;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 use str0m::change::SdpOffer;
 use tokio::signal;
+use tokio::sync::RwLock;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
@@ -33,7 +36,7 @@ struct Ports {
 #[derive(Clone)]
 pub struct AppState {
     session_tx: Sender<Session>,
-    session_registry: HashMap<Uuid, UnboundedSender<Client>>,
+    session_registry: Arc<RwLock<HashMap<Uuid, UnboundedSender<Client>>>>,
 }
 
 #[tokio::main]
@@ -46,7 +49,7 @@ async fn main() -> Result<()> {
     let (session_tx, session_rx): (Sender<Session>, Receiver<Session>) = channel::bounded(10);
     let state = AppState {
         session_tx: session_tx.clone(),
-        session_registry: HashMap::new(),
+        session_registry: Arc::new(RwLock::new(HashMap::new())),
     };
 
     // configure certificate and private key used by https
@@ -61,6 +64,8 @@ async fn main() -> Result<()> {
         .route("/whip", post(whip))
         .with_state(state.clone())
         .route("/whep", post(whep))
+        .with_state(state.clone())
+        .route("/sessions", get(session_list))
         .with_state(state);
 
     let ports = Ports { https: 3000 };
@@ -109,8 +114,12 @@ async fn whip(State(state): State<AppState>, Json(payload): Json<SdpOffer>) -> R
     let mut client = Client::new().await.expect("Failed to create client");
     let answer = client.accept_request(payload).await.unwrap();
 
+    // TODO: does it make sense for the HTTP server to handle session tracking?
+    // or should we offload that to an actor that keeps track of them?
     let (session, subscriber_channel) = Session::new(client);
-    let id = session.id.clone();
+    let mut session_registry = state.session_registry.write().await;
+    session_registry.insert(session.id.clone(), subscriber_channel);
+
     state.session_tx.send(session).await.unwrap();
 
     Response::builder()
@@ -120,9 +129,16 @@ async fn whip(State(state): State<AppState>, Json(payload): Json<SdpOffer>) -> R
         .unwrap()
 }
 
+async fn session_list(State(state): State<AppState>) -> Json<Vec<Uuid>> {
+    let session_registry = state.session_registry.read().await;
+    let session_ids: Vec<Uuid> = session_registry.keys().copied().collect();
+    Json(session_ids)
+}
+
 /// WHEP endpoint
 async fn whep(State(state): State<AppState>, Json(payload): Json<SdpOffer>) -> Response<String> {
     // TODO: before even creating a new client, check that the session is valid
+    let _session_registry = state.session_registry.read().await;
 
     let mut client = Client::new().await.expect("Failed to create client");
     let answer = client.accept_request(payload).await.unwrap();
