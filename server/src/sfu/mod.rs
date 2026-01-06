@@ -2,10 +2,10 @@ use anyhow::{Error, anyhow};
 use async_channel::Receiver;
 use tokio_util::sync::CancellationToken;
 
-use crate::session::Session;
+use crate::session::tracking::Handle;
 
 pub async fn process_sessions(
-    mut session_rx: Receiver<Session>,
+    mut session_manager: Handle,
     token: CancellationToken,
 ) -> Result<(), Error> {
     // TODO: rework this logic to handle multiple sessions.

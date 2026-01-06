@@ -1,5 +1,4 @@
 use anyhow::Result;
-use async_channel::{self as channel, Receiver, Sender};
 use axum::Json;
 use axum::Router;
 use axum::extract::State;
@@ -8,19 +7,20 @@ use axum::routing::get;
 use axum::routing::post;
 use axum_server::tls_rustls::RustlsConfig;
 use rtc::Client;
+use serde_json::json;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 use str0m::change::SdpOffer;
 use tokio::signal;
+use tokio::sync::oneshot;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use uuid::Uuid;
 
-use crate::session::Session;
 use crate::session::tracking::Message;
-use crate::session::tracking::SessionTracker;
+use crate::session::tracking::SessionManager;
 use crate::sfu::process_sessions;
 
 mod session;
@@ -33,8 +33,7 @@ struct Ports {
 
 #[derive(Clone)]
 pub struct AppState {
-    session_tx: Sender<Session>,
-    session_tracker: Sender<Message>,
+    session_manager: crate::session::tracking::Handle,
 }
 
 #[tokio::main]
@@ -43,12 +42,10 @@ async fn main() -> Result<()> {
         .with(tracing_subscriber::fmt::layer())
         .init();
 
-    // Channel for sending sessions to SFU
-    let (mut session_tracker, session_tracker_handle) = SessionTracker::new();
-    let (session_tx, session_rx): (Sender<Session>, Receiver<Session>) = channel::bounded(10);
+    // Custom session manager actor and a handle used for communicating with it
+    let (mut session_manager, session_manager_handle) = SessionManager::new();
     let state = AppState {
-        session_tx,
-        session_tracker: session_tracker_handle,
+        session_manager: session_manager_handle.clone(),
     };
 
     // configure certificate and private key used by https
@@ -98,10 +95,10 @@ async fn main() -> Result<()> {
     };
 
     let mut set = JoinSet::new();
-    set.spawn(process_sessions(session_rx, token.clone()));
+    set.spawn(process_sessions(session_manager_handle, token.clone()));
     set.spawn(https_server);
     // TODO: why does adding the async move (and .await) here fix the lifetime error?
-    set.spawn(async move { session_tracker.run().await });
+    set.spawn(async move { session_manager.run().await });
 
     // TODO: refactor to a looped join_next() so we can handle errors
     set.join_all().await;
@@ -114,11 +111,12 @@ async fn whip(State(state): State<AppState>, Json(payload): Json<SdpOffer>) -> R
     let mut client = Client::new().await.expect("Failed to create client");
     let answer = client.accept_request(payload).await.unwrap();
 
-    let (session, subscriber_channel) = Session::new(client);
-
-    // TODO: send message to session tracker actor
-
-    state.session_tx.send(session).await.unwrap();
+    if let Err(_) = state
+        .session_manager
+        .try_send(Message::NewPublisher(client))
+    {
+        tracing::error!("failed to send client to session manager");
+    }
 
     Response::builder()
         .status(201)
@@ -128,10 +126,20 @@ async fn whip(State(state): State<AppState>, Json(payload): Json<SdpOffer>) -> R
 }
 
 async fn session_list(State(state): State<AppState>) -> Json<Vec<Uuid>> {
-    todo!("implement me")
-    // let session_registry = state.session_registry.read().await;
-    // let session_ids: Vec<Uuid> = session_registry.keys().copied().collect();
-    // Json(session_ids)
+    let (tx, rx) = oneshot::channel();
+    if let Err(_) = state
+        .session_manager
+        .try_send(Message::GetActiveSessions(tx))
+    {
+        tracing::error!("error from requesting active sessions from session manager");
+    }
+    match rx.await {
+        Ok(session_list) => Json(session_list),
+        Err(_) => {
+            tracing::error!("error fetching list of active sessions");
+            Json(vec![])
+        }
+    }
 }
 
 /// WHEP endpoint
