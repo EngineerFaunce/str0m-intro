@@ -7,7 +7,6 @@ use axum::routing::get;
 use axum::routing::post;
 use axum_server::tls_rustls::RustlsConfig;
 use rtc::Client;
-use serde_json::json;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -42,20 +41,13 @@ async fn main() -> Result<()> {
         .with(tracing_subscriber::fmt::layer())
         .init();
 
-    // Custom session manager actor and a handle used for communicating with it
+    // * Custom session manager actor and a handle used for communicating with it
     let (mut session_manager, session_manager_handle) = SessionManager::new();
+    let handle = axum_server::Handle::new();
+
     let state = AppState {
         session_manager: session_manager_handle.clone(),
     };
-
-    // configure certificate and private key used by https
-    let certificate_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("self_signed_certs");
-    let config = RustlsConfig::from_pem_file(
-        PathBuf::from(&certificate_dir).join("cert.pem"),
-        PathBuf::from(&certificate_dir).join("key.pem"),
-    )
-    .await?;
-
     let app = Router::new()
         .route("/whip", post(whip))
         .with_state(state.clone())
@@ -63,10 +55,6 @@ async fn main() -> Result<()> {
         .with_state(state.clone())
         .route("/sessions", get(session_list))
         .with_state(state);
-
-    let ports = Ports { https: 3000 };
-    let addr = SocketAddr::from(([127, 0, 0, 1], ports.https));
-    let handle = axum_server::Handle::new();
 
     // * Spawn shutdown signal listener
     let token = CancellationToken::new();
@@ -83,6 +71,16 @@ async fn main() -> Result<()> {
             shutdown_handle.graceful_shutdown(Some(Duration::from_secs(10)));
         });
     }
+
+    // HTTP server configuration
+    let ports = Ports { https: 3000 };
+    let addr = SocketAddr::from(([127, 0, 0, 1], ports.https));
+    let certificate_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("self_signed_certs");
+    let config = RustlsConfig::from_pem_file(
+        PathBuf::from(&certificate_dir).join("cert.pem"),
+        PathBuf::from(&certificate_dir).join("key.pem"),
+    )
+    .await?;
 
     tracing::info!("listening on {addr}");
     // ! "Stuffing" the awaited server into a separate async block in order to map the error type. Is this appropriate, or is it scuffed?
