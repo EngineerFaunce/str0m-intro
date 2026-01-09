@@ -67,34 +67,39 @@ pub mod tracking {
     use tokio::sync::oneshot;
     use uuid::Uuid;
 
-    use crate::session::Session;
+    use crate::{session::Session, sfu::SfuHandle};
 
     /// Message types to be sent to/from the session tracker
-    pub enum Message {
+    pub enum SessionMessage {
+        EstablishConnection(SfuHandle),
         NewPublisher(Client),
         // TODO: do we add a boolean flag here to indicate if the Ended message came from the SFU process?
         // This is from thinking about the scenario of handling DELETE requests later on
         Ended(Uuid),
         GetActiveSessions(oneshot::Sender<Vec<Uuid>>),
+        ValidateSession(Uuid, oneshot::Sender<bool>),
     }
 
     /// A handle for our custom actor
-    pub type Handle = Sender<Message>;
+    pub type SessionManagerHandle = Sender<SessionMessage>;
 
     /// Custom actor for tracking session activity
     pub struct SessionManager {
-        messages_rx: Receiver<Message>,
+        messages_rx: Receiver<SessionMessage>,
         session_registry: HashMap<Uuid, Sender<Client>>,
+        sfu_handle: Option<SfuHandle>,
     }
 
     impl SessionManager {
         /// Create a new actor instance
-        pub fn new() -> (Self, Handle) {
+        pub fn new() -> (Self, SessionManagerHandle) {
+            // Channel allowing other processes to message this actor
             let (tx, rx) = channel::bounded(100);
             (
                 Self {
-                    messages_rx: rx.clone(),
+                    messages_rx: rx,
                     session_registry: HashMap::new(),
+                    sfu_handle: None,
                 },
                 tx,
             )
@@ -108,16 +113,20 @@ pub mod tracking {
             Ok(())
         }
 
-        async fn handle_message(&mut self, msg: Message) -> Result<()> {
+        async fn handle_message(&mut self, msg: SessionMessage) -> Result<()> {
             match msg {
-                Message::NewPublisher(client) => {
+                SessionMessage::EstablishConnection(handle) => {
+                    self.sfu_handle = Some(handle);
+                    Ok(())
+                }
+                SessionMessage::NewPublisher(client) => {
                     let (session, subscriber_tx) = Session::new(client);
                     self.session_registry
                         .insert(session.id.clone(), subscriber_tx);
                     // TODO: send the session to the SFU process
                     Ok(())
                 }
-                Message::Ended(session_id) => {
+                SessionMessage::Ended(session_id) => {
                     if !self.session_registry.contains_key(&session_id) {
                         tracing::warn!(
                             "attempted to remove session that is not active: {}",
@@ -127,10 +136,16 @@ pub mod tracking {
                     self.session_registry.remove(&session_id);
                     Ok(())
                 }
-                Message::GetActiveSessions(oneshot) => {
+                SessionMessage::GetActiveSessions(response) => {
                     let session_ids: Vec<Uuid> = self.session_registry.keys().copied().collect();
-                    if let Err(_) = oneshot.send(session_ids) {
+                    if let Err(_) = response.send(session_ids) {
                         tracing::warn!("failed to send list of active sessions");
+                    }
+                    Ok(())
+                }
+                SessionMessage::ValidateSession(session_id, response) => {
+                    if let Err(_) = response.send(self.session_registry.contains_key(&session_id)) {
+                        tracing::error!("failed to verify that session exists")
                     }
                     Ok(())
                 }

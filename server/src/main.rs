@@ -7,6 +7,7 @@ use axum::routing::get;
 use axum::routing::post;
 use axum_server::tls_rustls::RustlsConfig;
 use rtc::Client;
+use sfu::Sfu;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -17,10 +18,9 @@ use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use uuid::Uuid;
+use uuid::uuid;
 
-use crate::session::tracking::Message;
-use crate::session::tracking::SessionManager;
-use crate::sfu::process_sessions;
+use crate::session::tracking::{SessionManager, SessionManagerHandle, SessionMessage};
 
 mod session;
 mod sfu;
@@ -32,7 +32,7 @@ struct Ports {
 
 #[derive(Clone)]
 pub struct AppState {
-    session_manager: crate::session::tracking::Handle,
+    session_manager: SessionManagerHandle,
 }
 
 #[tokio::main]
@@ -43,6 +43,23 @@ async fn main() -> Result<()> {
 
     // * Custom session manager actor and a handle used for communicating with it
     let (mut session_manager, session_manager_handle) = SessionManager::new();
+    let (mut sfu, sfu_handle) = Sfu::new();
+    // TODO: should we do something other than panic here?
+    if let Err(_) = session_manager_handle
+        .send(SessionMessage::EstablishConnection(sfu_handle.clone()))
+        .await
+    {
+        panic!("error establishing connection")
+    }
+    if let Err(_) = sfu_handle
+        .send(sfu::SfuMessage::EstablishConnection(
+            session_manager_handle.clone(),
+        ))
+        .await
+    {
+        panic!("error establishing connection")
+    }
+
     let handle = axum_server::Handle::new();
 
     let state = AppState {
@@ -93,10 +110,10 @@ async fn main() -> Result<()> {
     };
 
     let mut set = JoinSet::new();
-    set.spawn(process_sessions(session_manager_handle, token.clone()));
     set.spawn(https_server);
     // TODO: why does adding the async move (and .await) here fix the lifetime error?
     set.spawn(async move { session_manager.run().await });
+    set.spawn(async move { sfu.run().await });
 
     // TODO: refactor to a looped join_next() so we can handle errors
     set.join_all().await;
@@ -111,7 +128,7 @@ async fn whip(State(state): State<AppState>, Json(payload): Json<SdpOffer>) -> R
 
     if let Err(_) = state
         .session_manager
-        .try_send(Message::NewPublisher(client))
+        .try_send(SessionMessage::NewPublisher(client))
     {
         tracing::error!("failed to send client to session manager");
     }
@@ -127,7 +144,7 @@ async fn session_list(State(state): State<AppState>) -> Json<Vec<Uuid>> {
     let (tx, rx) = oneshot::channel();
     if let Err(_) = state
         .session_manager
-        .try_send(Message::GetActiveSessions(tx))
+        .try_send(SessionMessage::GetActiveSessions(tx))
     {
         tracing::error!("error from requesting active sessions from session manager");
     }
@@ -143,6 +160,13 @@ async fn session_list(State(state): State<AppState>) -> Json<Vec<Uuid>> {
 /// WHEP endpoint
 async fn whep(State(state): State<AppState>, Json(payload): Json<SdpOffer>) -> Response<String> {
     // TODO: before even creating a new client, check that the session is valid
+    // let (tx, rx) = oneshot::channel();
+    // if let Err(_) = state
+    //     .session_manager
+    //     .try_send(SessionMessage::ValidateSession(uuid!(payload), tx))
+    // {
+    //     tracing::error!("error from requesting active sessions from session manager");
+    // }
 
     let mut client = Client::new().await.expect("Failed to create client");
     let answer = client.accept_request(payload).await.unwrap();
