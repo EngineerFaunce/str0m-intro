@@ -1,11 +1,10 @@
 use anyhow::Result;
 use gstreamer::{self as gst, prelude::*};
 use gstreamer_app::{AppSink, AppSinkCallbacks};
-use std::time::Duration;
 use tokio::sync::mpsc::Sender;
 use tracing::{debug, error, trace};
 
-pub fn stream_test_video(sender_channel: Sender<Vec<u8>>) -> Result<()> {
+pub async fn stream_test_video(sender_channel: Sender<Vec<u8>>) -> Result<()> {
     gst::init()?;
 
     // * Set up GStreamer pipeline
@@ -27,7 +26,6 @@ pub fn stream_test_video(sender_channel: Sender<Vec<u8>>) -> Result<()> {
     pipeline.add_many([&src, &conv, &enc, &pay, &sink])?;
     gst::Element::link_many([&src, &conv, &enc, &pay, &sink])?;
 
-    // * Set up appsink to capture RTP packets
     let appsink = sink.clone().dynamic_cast::<AppSink>().unwrap();
     appsink.set_callbacks(
         AppSinkCallbacks::builder()
@@ -37,12 +35,22 @@ pub fn stream_test_video(sender_channel: Sender<Vec<u8>>) -> Result<()> {
                 let map = buffer.map_readable().map_err(|_| gst::FlowError::Error)?;
                 let data = map.as_slice();
 
-                if let Err(e) = sender_channel.blocking_send(data.to_vec()) {
-                    tracing::error!("Failed to send RTP packet through channel: {}", e);
-                    return Err(gst::FlowError::Eos);
+                // Validate packet size (typical RTP packets are < 1500 bytes)
+                if data.len() > 1500 {
+                    tracing::warn!("Unusually large RTP packet: {} bytes", data.len());
                 }
 
-                Ok(gstreamer::FlowSuccess::Ok)
+                match sender_channel.try_send(data.to_vec()) {
+                    Ok(_) => Ok(gstreamer::FlowSuccess::Ok),
+                    Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                        tracing::warn!("Channel full, dropping packet");
+                        Ok(gstreamer::FlowSuccess::Ok) // Drop packet but continue
+                    }
+                    Err(_) => {
+                        error!("Channel closed");
+                        Err(gst::FlowError::Eos)
+                    }
+                }
             })
             .build(),
     );
@@ -54,8 +62,8 @@ pub fn stream_test_video(sender_channel: Sender<Vec<u8>>) -> Result<()> {
     let bus = pipeline.bus().unwrap();
 
     loop {
-        if let Some(msg) = bus.pop() {
-            match msg.view() {
+        match bus.timed_pop(gst::ClockTime::from_mseconds(100)) {
+            Some(msg) => match msg.view() {
                 gst::MessageView::Eos(..) => {
                     debug!("End of stream");
                     break;
@@ -68,14 +76,10 @@ pub fn stream_test_video(sender_channel: Sender<Vec<u8>>) -> Result<()> {
                     );
                     break;
                 }
-                _ => {
-                    debug!("Other message: {:?}", msg);
-                }
-            }
+                _ => {}
+            },
+            None => {} // Timeout, continue loop
         }
-
-        // Small sleep to prevent busy waiting
-        std::thread::sleep(Duration::from_millis(1));
     }
 
     pipeline.set_state(gst::State::Null)?;
