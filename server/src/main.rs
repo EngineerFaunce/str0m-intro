@@ -113,7 +113,7 @@ async fn main() -> Result<()> {
     set.spawn(https_server);
     // TODO: why does adding the async move (and .await) here fix the lifetime error?
     set.spawn(async move { session_manager.run().await });
-    set.spawn(async move { sfu.run().await });
+    set.spawn(async move { sfu.run(token.clone()).await });
 
     // TODO: refactor to a looped join_next() so we can handle errors
     set.join_all().await;

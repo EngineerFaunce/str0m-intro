@@ -1,14 +1,17 @@
-use anyhow::{Error, Result};
+use anyhow::Result;
 use async_channel::{self as channel, Receiver, Sender};
-use rtc::Client;
+use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
+use uuid::Uuid;
 
-use crate::session::{Session, tracking::SessionManagerHandle};
+use crate::session::{
+    Session,
+    tracking::{SessionManagerHandle, SessionMessage},
+};
 
 pub enum SfuMessage {
     EstablishConnection(SessionManagerHandle),
     NewSession(Session),
-    NewSubscriber(Client),
 }
 
 pub type SfuHandle = Sender<SfuMessage>;
@@ -17,6 +20,7 @@ pub type SfuHandle = Sender<SfuMessage>;
 pub struct Sfu {
     messages_rx: Receiver<SfuMessage>,
     session_manager_handle: Option<SessionManagerHandle>,
+    join_set: JoinSet<Uuid>,
 }
 
 impl Sfu {
@@ -26,17 +30,36 @@ impl Sfu {
             Self {
                 messages_rx: rx,
                 session_manager_handle: None,
+                join_set: JoinSet::new(),
             },
             tx,
         )
     }
 
     /// Listen for messages and act on them
-    pub async fn run(&mut self) -> Result<()> {
-        while let Ok(msg) = self.messages_rx.recv().await {
-            self.handle_message(msg).await?;
+    pub async fn run(&mut self, token: CancellationToken) -> Result<()> {
+        loop {
+            tokio::select! {
+                _ = token.cancelled() => {
+                    tracing::debug!("Received cancellation request, shutting down SFU...");
+                    return Ok(());
+                }
+
+                Ok(msg) = self.messages_rx.recv() => {
+                    self.handle_message(msg).await?;
+                }
+
+                Some(Ok(session_id)) = self.join_set.join_next() => {
+                    if let Some(handle) = &self.session_manager_handle {
+                        handle.send(SessionMessage::Ended(session_id))
+                            .await
+                            .ok();
+                    } else {
+                        tracing::error!("session ended but no session manager handle available");
+                    }
+                }
+            }
         }
-        Ok(())
     }
 
     async fn handle_message(&mut self, msg: SfuMessage) -> Result<()> {
@@ -45,25 +68,12 @@ impl Sfu {
                 self.session_manager_handle = Some(handle);
                 Ok(())
             }
-            _ => Ok(()),
-        }
-    }
-
-    pub async fn process_sessions(&mut self, token: CancellationToken) -> Result<(), Error> {
-        // TODO: rework this logic to handle multiple sessions.
-        // I'm thinking that this "main" SFU loop will simply await token cancellation
-        // and spawn off new tasks for each session. The sessions will need a channel
-        // in order to "send" subscribers to it to start processing.
-        // Remember structured concurrency.
-        // let mut join_set = JoinSet::new();
-
-        loop {
-            tokio::select! {
-                // TODO: receive messages and start sessions
-                _ = token.cancelled() => {
-                    tracing::debug!("Received cancellation request, shutting down SFU...");
-                    return Ok(());
-                }
+            SfuMessage::NewSession(mut session) => {
+                self.join_set.spawn(async move {
+                    session.start().await;
+                    session.id
+                });
+                Ok(())
             }
         }
     }

@@ -45,7 +45,7 @@ impl Session {
     }
 
     /// Drive the state of the session.
-    pub async fn start(&mut self, token: CancellationToken) {
+    pub async fn start(&mut self) {
         self.refresh();
 
         // TODO: Poll the publisher for any RTP packets, or a timeout
@@ -67,7 +67,10 @@ pub mod tracking {
     use tokio::sync::oneshot;
     use uuid::Uuid;
 
-    use crate::{session::Session, sfu::SfuHandle};
+    use crate::{
+        session::Session,
+        sfu::{SfuHandle, SfuMessage},
+    };
 
     /// Message types to be sent to/from the session tracker
     pub enum SessionMessage {
@@ -123,7 +126,18 @@ pub mod tracking {
                     let (session, subscriber_tx) = Session::new(client);
                     self.session_registry
                         .insert(session.id.clone(), subscriber_tx);
-                    // TODO: send the session to the SFU process
+
+                    // * Forward the session
+                    match &self.sfu_handle {
+                        Some(handle) => {
+                            if let Err(_) = handle.send(SfuMessage::NewSession(session)).await {
+                                tracing::error!("error forwarding session to SFU process.")
+                            }
+                        }
+                        None => {
+                            tracing::error!("SFU handle not configured.");
+                        }
+                    }
                     Ok(())
                 }
                 SessionMessage::Ended(session_id) => {
