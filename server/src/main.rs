@@ -1,13 +1,18 @@
 use anyhow::Result;
 use axum::Json;
 use axum::Router;
+use axum::extract::Path;
 use axum::extract::State;
+use axum::http::StatusCode;
+use axum::response::IntoResponse;
 use axum::response::Response;
 use axum::routing::get;
 use axum::routing::post;
 use axum_server::tls_rustls::RustlsConfig;
 use rtc::Client;
-use sfu::Sfu;
+use session::session_manager::SessionManager;
+use session::session_manager::SessionManagerHandle;
+use session::session_manager::SessionMessage;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -18,12 +23,8 @@ use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use uuid::Uuid;
-use uuid::uuid;
-
-use crate::session::tracking::{SessionManager, SessionManagerHandle, SessionMessage};
 
 mod session;
-mod sfu;
 
 #[derive(Clone, Copy)]
 struct Ports {
@@ -43,23 +44,6 @@ async fn main() -> Result<()> {
 
     // * Custom session manager actor and a handle used for communicating with it
     let (mut session_manager, session_manager_handle) = SessionManager::new();
-    let (mut sfu, sfu_handle) = Sfu::new();
-    // TODO: should we do something other than panic here?
-    if let Err(_) = session_manager_handle
-        .send(SessionMessage::EstablishConnection(sfu_handle.clone()))
-        .await
-    {
-        panic!("error establishing connection")
-    }
-    if let Err(_) = sfu_handle
-        .send(sfu::SfuMessage::EstablishConnection(
-            session_manager_handle.clone(),
-        ))
-        .await
-    {
-        panic!("error establishing connection")
-    }
-
     let handle = axum_server::Handle::new();
 
     let state = AppState {
@@ -68,7 +52,7 @@ async fn main() -> Result<()> {
     let app = Router::new()
         .route("/whip", post(whip))
         .with_state(state.clone())
-        .route("/whep", post(whep))
+        .route("/whep/{session_id}", post(whep))
         .with_state(state.clone())
         .route("/sessions", get(session_list))
         .with_state(state);
@@ -112,8 +96,7 @@ async fn main() -> Result<()> {
     let mut set = JoinSet::new();
     set.spawn(https_server);
     // TODO: why does adding the async move (and .await) here fix the lifetime error?
-    set.spawn(async move { session_manager.run().await });
-    set.spawn(async move { sfu.run(token.clone()).await });
+    set.spawn(async move { session_manager.run(token.clone()).await });
 
     // TODO: refactor to a looped join_next() so we can handle errors
     set.join_all().await;
@@ -158,26 +141,42 @@ async fn session_list(State(state): State<AppState>) -> Json<Vec<Uuid>> {
 }
 
 /// WHEP endpoint
-async fn whep(State(state): State<AppState>, Json(payload): Json<SdpOffer>) -> Response<String> {
-    // TODO: before even creating a new client, check that the session is valid
-    // let (tx, rx) = oneshot::channel();
-    // if let Err(_) = state
-    //     .session_manager
-    //     .try_send(SessionMessage::ValidateSession(uuid!(payload), tx))
-    // {
-    //     tracing::error!("error from requesting active sessions from session manager");
-    // }
+async fn whep(
+    Path(session_id): Path<Uuid>,
+    State(state): State<AppState>,
+    Json(payload): Json<SdpOffer>,
+) -> impl IntoResponse {
+    // Before even creating a new client, check that the session is valid
+    let (tx, rx) = oneshot::channel();
+    if state
+        .session_manager
+        .send(SessionMessage::ValidateSession(session_id, tx))
+        .await
+        .is_err()
+    {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
+
+    let is_valid = match rx.await {
+        Ok(valid) => valid,
+        Err(_) => {
+            tracing::error!("error validating session");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
+
+    if !is_valid {
+        tracing::error!("session is invalid");
+        return StatusCode::NOT_FOUND.into_response();
+    }
 
     let mut client = Client::new().await.expect("Failed to create client");
     let answer = client.accept_request(payload).await.unwrap();
 
     // TODO: add the client to the session
 
-    Response::builder()
-        .status(201)
-        .header("Location", "/") // TODO: should point to the newly created resource, but where is that?
-        .body(answer)
-        .unwrap()
+    //     .header("Location", "/") // TODO: should point to the newly created resource, but where is that?
+    (StatusCode::CREATED, answer).into_response()
 }
 
 async fn shutdown_signal(token: CancellationToken) {
