@@ -11,6 +11,7 @@ use crate::session::Session;
 /// Message types to be sent to/from the session tracker
 pub enum SessionMessage {
     NewPublisher(Client),
+    NewSubscriber(Uuid, Client),
     GetActiveSessions(oneshot::Sender<Vec<Uuid>>),
     ValidateSession(Uuid, oneshot::Sender<bool>),
     // TODO: handle DELETE requests for ending a session
@@ -72,6 +73,14 @@ impl SessionManager {
                     session.start().await;
                     session.id
                 });
+                Ok(())
+            }
+            SessionMessage::NewSubscriber(session_id, client) => {
+                if let Some(channel) = self.session_registry.get(&session_id) {
+                    if let Err(_) = channel.try_send(client) {
+                        tracing::error!("failed to add subscriber to session")
+                    }
+                }
                 Ok(())
             }
             SessionMessage::GetActiveSessions(response) => {
