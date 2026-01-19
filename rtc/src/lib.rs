@@ -153,6 +153,8 @@ impl Client {
 
         // TODO: should the certificate and key be moved to a more central location?
         let temp = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("server")
             .join("self_signed_certs")
             .join("cert.pem");
         let mut file = File::open(temp).await?;
