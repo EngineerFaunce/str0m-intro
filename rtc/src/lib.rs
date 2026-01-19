@@ -2,6 +2,7 @@ use anyhow::Error;
 use anyhow::Result;
 use reqwest::header::{ACCEPT, HeaderValue};
 use reqwest::{ClientBuilder, header::CONTENT_TYPE};
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::time::Instant;
 use std::{
@@ -188,19 +189,48 @@ impl Client {
         Ok(())
     }
 
+    pub async fn poll_until_timeout(&mut self, queue: &mut VecDeque<Propagated>) -> Instant {
+        loop {
+            if (!self.rtc.is_alive()) {
+                return Instant::now();
+            }
+
+            let propagated = self.poll_output();
+        }
+    }
+
+    async fn poll_output(&mut self) -> Propagated {
+        if !self.rtc.is_alive() {
+            return Propagated::Noop;
+        }
+
+        match self.rtc.poll_output() {
+            Ok(output) => self.handle_output(output).await,
+            Err(_e) => {
+                // tracing::warn!("Client ({}) poll_output failed: {:?}", *self.id, e);
+                self.rtc.disconnect();
+                Propagated::Noop
+            }
+        }
+    }
+
     async fn handle_output(&mut self, output: Output) -> Propagated {
         match output {
             // * Stop polling when we get a timeout
             Output::Timeout(timeout) => Propagated::Timeout(timeout),
 
             // * Transmit this data to the remote peer
-            Output::Transmit(send) => {
-                if let Err(e) = self.socket.send_to(&send.contents, send.destination).await {
+            Output::Transmit(transmit) => {
+                if let Err(e) = self
+                    .socket
+                    .send_to(&transmit.contents, transmit.destination)
+                    .await
+                {
                     tracing::warn!(
                         "sending to {} => {}, len {} error {:?}",
-                        send.source,
-                        send.destination,
-                        send.contents.len(),
+                        transmit.source,
+                        transmit.destination,
+                        transmit.contents.len(),
                         e
                     );
                 };
@@ -334,8 +364,13 @@ impl Client {
 }
 
 #[derive(Debug)]
-enum Propagated {
+pub enum Propagated {
+    /// Nothing to propagate
     Noop,
+
+    /// Poll client has reached timeout
     Timeout(Instant),
+
+    /// RTP packet to be propagated from one client to others
     RtpPacket(Uuid, RtpPacket),
 }
