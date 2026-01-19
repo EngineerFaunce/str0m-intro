@@ -5,7 +5,6 @@ use axum::extract::Path;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use axum::response::Response;
 use axum::routing::get;
 use axum::routing::post;
 use axum_server::tls_rustls::RustlsConfig;
@@ -105,7 +104,7 @@ async fn main() -> Result<()> {
 }
 
 /// WHIP endpoint
-async fn whip(State(state): State<AppState>, Json(payload): Json<SdpOffer>) -> Response<String> {
+async fn whip(State(state): State<AppState>, Json(payload): Json<SdpOffer>) -> impl IntoResponse {
     let mut client = Client::new().await.expect("Failed to create client");
     let answer = client.accept_request(payload).await.unwrap();
 
@@ -114,13 +113,11 @@ async fn whip(State(state): State<AppState>, Json(payload): Json<SdpOffer>) -> R
         .try_send(SessionMessage::NewPublisher(client))
     {
         tracing::error!("failed to send client to session manager");
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
 
-    Response::builder()
-        .status(201)
-        .header("Location", "/") // TODO: should point to the newly created resource, but where is that? I think this would be the client/session ID so that a DELETE request could end the session
-        .body(answer)
-        .unwrap()
+    // TODO: add header pointing to newly created resource
+    (StatusCode::CREATED, answer).into_response()
 }
 
 async fn session_list(State(state): State<AppState>) -> Json<Vec<Uuid>> {
@@ -167,15 +164,21 @@ async fn whep(
 
     if !is_valid {
         tracing::error!("session is invalid");
+        // TODO: is this following the WHEP protocol?
         return StatusCode::NOT_FOUND.into_response();
     }
 
     let mut client = Client::new().await.expect("Failed to create client");
     let answer = client.accept_request(payload).await.unwrap();
 
-    // TODO: add the client to the session
+    if let Err(_) = state
+        .session_manager
+        .try_send(SessionMessage::NewSubscriber(session_id, client))
+    {
+        tracing::error!("oops")
+    }
 
-    //     .header("Location", "/") // TODO: should point to the newly created resource, but where is that?
+    // TODO: add "Location" header that points to newly created resource
     (StatusCode::CREATED, answer).into_response()
 }
 
