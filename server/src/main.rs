@@ -45,17 +45,6 @@ async fn main() -> Result<()> {
     let (mut session_manager, session_manager_handle) = SessionManager::new();
     let handle = axum_server::Handle::new();
 
-    let state = AppState {
-        session_manager: session_manager_handle.clone(),
-    };
-    let app = Router::new()
-        .route("/whip", post(whip))
-        .with_state(state.clone())
-        .route("/whep/{session_id}", post(whep))
-        .with_state(state.clone())
-        .route("/sessions", get(session_list))
-        .with_state(state);
-
     // * Spawn shutdown signal listener
     let token = CancellationToken::new();
     tokio::spawn(shutdown_signal(token.clone()));
@@ -72,7 +61,17 @@ async fn main() -> Result<()> {
         });
     }
 
-    // HTTP server configuration
+    // * Web server configuration
+    let state = AppState {
+        session_manager: session_manager_handle.clone(),
+    };
+    let app = Router::new()
+        .route("/whip", post(whip))
+        .with_state(state.clone())
+        .route("/whep/{session_id}", post(whep))
+        .with_state(state.clone())
+        .route("/sessions", get(session_list))
+        .with_state(state);
     let ports = Ports { https: 3000 };
     let addr = SocketAddr::from(([127, 0, 0, 1], ports.https));
     let certificate_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("self_signed_certs");
