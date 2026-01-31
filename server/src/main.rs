@@ -73,7 +73,7 @@ async fn main() -> Result<()> {
         .route("/sessions", get(session_list))
         .with_state(state);
     let ports = Ports { https: 3000 };
-    let addr = SocketAddr::from(([127, 0, 0, 1], ports.https));
+    let addr = SocketAddr::from(([0, 0, 0, 0], ports.https));
     let certificate_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("self_signed_certs");
     let config = RustlsConfig::from_pem_file(
         PathBuf::from(&certificate_dir).join("cert.pem"),
@@ -94,6 +94,7 @@ async fn main() -> Result<()> {
     let mut set = JoinSet::new();
     set.spawn(https_server);
     // TODO: why does adding the async move (and .await) here fix the lifetime error?
+    // Is it because of the "stuffing" for the web server?
     set.spawn(async move { session_manager.run(token.clone()).await });
 
     // TODO: refactor to a looped join_next() so we can handle errors
