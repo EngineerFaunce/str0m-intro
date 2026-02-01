@@ -2,13 +2,9 @@ use anyhow::Error;
 use anyhow::Result;
 use reqwest::header::{ACCEPT, HeaderValue};
 use reqwest::{ClientBuilder, header::CONTENT_TYPE};
-use std::collections::VecDeque;
 use std::path::PathBuf;
+use std::time::Duration;
 use std::time::Instant;
-use std::{
-    net::{IpAddr, Ipv4Addr, SocketAddr},
-    time::Duration,
-};
 use str0m::Event;
 use str0m::IceConnectionState;
 use str0m::Output;
@@ -17,7 +13,7 @@ use str0m::media::Mid;
 use str0m::rtp::ExtensionValues;
 use str0m::rtp::RtpPacket;
 use str0m::{
-    Candidate, Rtc, RtcError,
+    Rtc, RtcError,
     change::{SdpAnswer, SdpOffer},
 };
 use tokio::fs::File;
@@ -34,7 +30,6 @@ mod rtp_state;
 pub struct Client {
     pub id: Uuid,
     pub rtc: Rtc,
-    pub socket: UdpSocket,
     video_mid: Option<Mid>,
     video_rtp: RtpState,
 }
@@ -42,26 +37,16 @@ pub struct Client {
 impl Client {
     pub async fn new() -> Result<Self, RtcError> {
         // * Set up the WebRTC client
-        let mut rtc = Rtc::builder()
+        let rtc = Rtc::builder()
             .set_rtp_mode(true)
             .clear_codecs()
             .enable_h264(true)
             .set_stats_interval(Some(Duration::from_secs(2)))
             .build();
 
-        // TODO: for local testing only - both client and server on same machine
-        let socket_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
-        let socket = UdpSocket::bind(socket_addr).await?;
-
-        let actual_addr = socket.local_addr()?;
-        tracing::debug!("local socket address: {:?}", actual_addr);
-
-        rtc.add_local_candidate(Candidate::host(actual_addr, str0m::net::Protocol::Udp)?);
-
         Ok(Self {
             id: uuid::Uuid::new_v4(),
             rtc,
-            socket,
             video_mid: None,
             video_rtp: RtpState::new(),
         })
@@ -189,40 +174,29 @@ impl Client {
         Ok(())
     }
 
-    pub async fn poll_until_timeout(&mut self, queue: &mut VecDeque<Propagated>) -> Instant {
-        loop {
-            if (!self.rtc.is_alive()) {
-                return Instant::now();
-            }
-
-            let propagated = self.poll_output();
-        }
-    }
-
-    async fn poll_output(&mut self) -> Propagated {
+    pub async fn poll_output(&mut self, socket: &UdpSocket) -> Propagated {
         if !self.rtc.is_alive() {
             return Propagated::Noop;
         }
 
         match self.rtc.poll_output() {
-            Ok(output) => self.handle_output(output).await,
-            Err(_e) => {
-                // tracing::warn!("Client ({}) poll_output failed: {:?}", *self.id, e);
+            Ok(output) => self.handle_output(socket, output).await,
+            Err(e) => {
+                tracing::warn!("Client ({}) poll_output failed: {:?}", &self.id, e);
                 self.rtc.disconnect();
                 Propagated::Noop
             }
         }
     }
 
-    async fn handle_output(&mut self, output: Output) -> Propagated {
+    async fn handle_output(&mut self, socket: &UdpSocket, output: Output) -> Propagated {
         match output {
             // * Stop polling when we get a timeout
             Output::Timeout(timeout) => Propagated::Timeout(timeout),
 
             // * Transmit this data to the remote peer
             Output::Transmit(transmit) => {
-                if let Err(e) = self
-                    .socket
+                if let Err(e) = socket
                     .send_to(&transmit.contents, transmit.destination)
                     .await
                 {
@@ -251,10 +225,6 @@ impl Client {
                     tracing::trace!("Codec config: {:?}", self.rtc.codec_config());
                     Propagated::Noop
                 }
-                // Event::MediaData(data) => {
-                //     tracing::trace!("Media data: {:?}", data);
-                //     // continue;
-                // }
                 Event::RtpPacket(packet) => {
                     tracing::trace!("RTP packet: {:?}", packet);
                     Propagated::RtpPacket(self.id, packet)
@@ -263,55 +233,6 @@ impl Client {
             },
         }
     }
-
-    // pub async fn run(&mut self, token: CancellationToken) -> Result<(), Error> {
-    //     loop {
-    //         // * Poll output until we get a timeout. Timeout means we are either awaiting UDP socket input or the timeout to happen.
-    //         // * Duration until timeout
-    //         let duration = timeout - Instant::now();
-
-    //         // * If the duration is zero, drive time forward in rtc straight away
-    //         if duration.is_zero() {
-    //             match self.rtc.handle_input(Input::Timeout(Instant::now())) {
-    //                 Ok(_) => continue,
-    //                 Err(e) => {
-    //                     panic!("error handling input when duration is zero: {:?}", e);
-    //                 }
-    //             };
-    //         }
-
-    //         // * "Create" the input for the RTC state. This is either by recieving from the UDP socket or by timing out.
-    //         let input = tokio::select! {
-    //             _ = token.cancelled() => break,
-    //             res = tokio::time::timeout(duration, self.socket.recv_from(&mut self.buf)) => {
-    //                 match res {
-    //                     Ok(Ok((n, source))) => {
-    //                         self.buf[n..].fill(0);
-    //                         Input::Receive(Instant::now(), Receive {
-    //                             proto: Protocol::Udp,
-    //                             source,
-    //                             destination: self.socket.local_addr()?,
-    //                             contents: (&self.buf[..n]).try_into()?
-    //                         })
-    //                     }
-    //                     Ok(Err(e)) => match e.kind() {
-    //                         ErrorKind::TimedOut => Input::Timeout(Instant::now()),
-    //                         _ => {
-    //                             tracing::error!("error: {:?}", e);
-    //                             return Err(anyhow!("error receiving from UDP socket: {:?}", e));
-    //                         }
-    //                     },
-    //                     Err(_) => Input::Timeout(Instant::now()),
-    //                 }
-    //             }
-    //         };
-
-    //         // * Drive the state forward with the input.
-    //         self.rtc.handle_input(input).unwrap();
-    //     }
-
-    //     Ok(())
-    // }
 
     pub fn send_video(
         &mut self,
