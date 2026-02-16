@@ -3,7 +3,7 @@ use rtc::{Client, Propagated};
 use std::{
     collections::{HashMap, VecDeque},
     net::{IpAddr, SocketAddr},
-    time::{Duration, Instant},
+    time::Instant,
 };
 use str0m::Candidate;
 use sysinfo::Networks;
@@ -64,23 +64,20 @@ impl Session {
         loop {
             self.refresh();
 
-            let mut timeout = Instant::now() + Duration::from_millis(100);
-            let t = self.poll_until_timeout(&mut to_propagate).await;
-            timeout = timeout.min(t);
+            let _t = self.poll_until_timeout(&mut to_propagate).await;
 
             // TODO: call method to forward media from publisher to subscribers.
             // If we have an item to propagate, do that
             if let Some(p) = to_propagate.pop_front() {
-                // propagate(&p, &mut clients);
+                self.propagate(&p);
                 continue;
             }
 
-            // The read timeout is not allowed to be 0. In case it is 0, we set 1 millisecond.
-            let duration = (timeout - Instant::now()).max(Duration::from_millis(1));
+            // ? No need to set socket read timeout since we're using tokio::net::UdpSocket?
 
-            // for (id, client) in self.subscribers.iter_mut() {
-            //     // TODO: Poll the subscribers until timeout
-            // }
+            for (id, client) in self.subscribers.iter_mut() {
+                // TODO: Poll the subscribers until timeout
+            }
         }
     }
 
@@ -111,7 +108,7 @@ impl Session {
         }
     }
 
-    pub async fn poll_until_timeout(&mut self, queue: &mut VecDeque<Propagated>) -> Instant {
+    async fn poll_until_timeout(&mut self, queue: &mut VecDeque<Propagated>) -> Instant {
         loop {
             if !self.publisher.rtc.is_alive() {
                 return Instant::now();
@@ -125,6 +122,10 @@ impl Session {
 
             queue.push_back(propagated)
         }
+    }
+
+    fn propagate(&self, packet: &Propagated) {
+        todo!("the thing")
     }
 }
 
