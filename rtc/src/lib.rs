@@ -22,21 +22,16 @@ use tokio::net::UdpSocket;
 use tokio::sync::mpsc::Receiver;
 use uuid::Uuid;
 
-use crate::rtp_state::RtpState;
-
-mod rtp_state;
-
 #[derive(Debug)]
 pub struct Client {
     pub id: Uuid,
     pub rtc: Rtc,
     video_mid: Option<Mid>,
-    video_rtp: RtpState,
 }
 
 impl Client {
+    /// Creates a new WebRTC client
     pub async fn new() -> Result<Self, RtcError> {
-        // * Set up the WebRTC client
         let rtc = Rtc::builder()
             .set_rtp_mode(true)
             .clear_codecs()
@@ -48,10 +43,10 @@ impl Client {
             id: uuid::Uuid::new_v4(),
             rtc,
             video_mid: None,
-            video_rtp: RtpState::new(),
         })
     }
 
+    /// Make a request to the WHIP endpoint
     pub async fn make_whip_request(&mut self) -> Result<(), Error> {
         // WHIP client creates the offer
         let mut change = self.rtc.sdp_api();
@@ -108,6 +103,7 @@ impl Client {
         Ok(())
     }
 
+    /// Accept an SdpOffer
     pub async fn accept_request(&mut self, offer: SdpOffer) -> Result<String, RtcError> {
         let answer = self
             .rtc
@@ -118,6 +114,7 @@ impl Client {
         Ok(answer.to_sdp_string())
     }
 
+    /// Make a request to the WHEP endpoint
     pub async fn make_whep_request(&mut self) -> Result<(), Error> {
         // WHEP client creates the offer
         let mut change = self.rtc.sdp_api();
@@ -250,7 +247,7 @@ impl Client {
                 let pt = params.pt();
 
                 // * Get the next sequence number and timestamp
-                let (current_seq, ts) = self.video_rtp.next();
+                let (current_seq, ts) = todo!();
 
                 // * Acquire a send stream and write the RTP packet
                 let mut direct_api = self.rtc.direct_api();
