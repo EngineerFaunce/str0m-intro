@@ -65,7 +65,7 @@ impl SessionManager {
     async fn handle_message(&mut self, msg: SessionMessage) -> Result<()> {
         match msg {
             SessionMessage::NewPublisher(client) => {
-                let (mut session, subscriber_tx) = Session::new(client);
+                let (mut session, subscriber_tx) = Session::new(client).await;
                 self.session_registry
                     .insert(session.id.clone(), subscriber_tx);
 
