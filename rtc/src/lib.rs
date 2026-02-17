@@ -233,47 +233,36 @@ impl Client {
 
     pub fn send_video(
         &mut self,
-        rtp_video_channel: &mut Receiver<Vec<u8>>,
+        rtp_video_channel: &mut Receiver<RtpPacketData>,
     ) -> Result<(), RtcError> {
         // * When there is a video RTP packet to send
         if let Ok(packet) = rtp_video_channel.try_recv() {
-            // * Get the parameters for the payload type that
-            let payload_params = self
-                .rtc
-                .codec_config()
-                .find(|p| p.spec().codec == Codec::H264);
-
-            if let Some(params) = payload_params {
-                let pt = params.pt();
-
-                // * Get the next sequence number and timestamp
-                let (current_seq, ts) = todo!();
-
-                // * Acquire a send stream and write the RTP packet
-                let mut direct_api = self.rtc.direct_api();
-                let stream_tx = direct_api
-                    .stream_tx_by_mid(self.video_mid.unwrap(), None)
-                    .unwrap();
-                match stream_tx.write_rtp(
-                    pt,
-                    current_seq,
-                    ts,
-                    Instant::now(),
-                    false, // not a marker
-                    ExtensionValues::default(),
-                    false, // not padding
-                    packet,
-                ) {
-                    Ok(_) => {
-                        tracing::trace!("Sent RTP packet: seq={:?}, ts={}", current_seq, ts);
-                    }
-                    // TODO: handle specific PacketError cases
-                    Err(e) => {
-                        tracing::error!("Failed to send RTP packet: {:?}", e);
-                    }
+            // * Acquire a send stream and write the RTP packet
+            let mut direct_api = self.rtc.direct_api();
+            let stream_tx = direct_api
+                .stream_tx_by_mid(self.video_mid.unwrap(), None)
+                .unwrap();
+            match stream_tx.write_rtp(
+                packet.payload_type.into(),
+                (packet.sequence_number as u64).into(),
+                packet.timestamp.into(),
+                Instant::now(),
+                packet.marker, // marker
+                ExtensionValues::default(),
+                false, // not padding
+                packet.payload,
+            ) {
+                Ok(_) => {
+                    tracing::trace!(
+                        "Sent RTP packet: seq={:?}, ts={}",
+                        packet.sequence_number,
+                        packet.timestamp
+                    );
                 }
-            } else {
-                tracing::debug!("No payload type found");
+                // TODO: handle specific PacketError cases
+                Err(e) => {
+                    tracing::error!("Failed to send RTP packet: {:?}", e);
+                }
             }
         }
 
@@ -291,4 +280,13 @@ pub enum Propagated {
 
     /// RTP packet to be propagated from one client to others
     RtpPacket(Uuid, RtpPacket),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RtpPacketData {
+    pub payload_type: u8,
+    pub sequence_number: u16,
+    pub timestamp: u32,
+    pub marker: bool,
+    pub payload: Vec<u8>,
 }

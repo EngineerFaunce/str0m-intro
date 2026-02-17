@@ -1,17 +1,9 @@
 use anyhow::{Result, anyhow};
 use gstreamer::{self as gst, prelude::*};
 use gstreamer_app::{AppSink, AppSinkCallbacks};
+use rtc::RtpPacketData;
 use tokio::sync::mpsc::Sender;
 use tracing::{debug, error, trace, warn};
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RtpPacketData {
-    pub payload_type: u8,
-    pub sequence_number: u16,
-    pub timestamp: u32,
-    pub marker: bool,
-    pub payload: Vec<u8>,
-}
 
 fn parse_rtp_packet(data: &[u8]) -> Option<RtpPacketData> {
     if data.len() < 12 {

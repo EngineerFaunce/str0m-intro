@@ -1313,6 +1313,7 @@ dependencies = [
  "gstreamer",
  "gstreamer-app",
  "gstreamer-base",
+ "rtc",
  "tokio",
  "tracing",
 ]

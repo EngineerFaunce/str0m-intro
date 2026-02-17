@@ -1,6 +1,5 @@
 use anyhow::Error;
-use media::RtpPacketData;
-use rtc::Client;
+use rtc::{Client, RtpPacketData};
 use tokio::{
     sync::mpsc::{self, Receiver, Sender},
     task::JoinSet,
