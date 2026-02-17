@@ -1,4 +1,5 @@
 use anyhow::Error;
+use media::RtpPacketData;
 use rtc::Client;
 use tokio::{
     sync::mpsc::{self, Receiver, Sender},
@@ -18,7 +19,7 @@ async fn main() -> Result<(), Error> {
     client.make_whip_request().await?;
 
     // * Channel for RTP packets
-    let (tx, rx): (Sender<Vec<u8>>, Receiver<Vec<u8>>) = mpsc::channel(100);
+    let (tx, _rx): (Sender<RtpPacketData>, Receiver<RtpPacketData>) = mpsc::channel(100);
     let token = CancellationToken::new();
     let mut set = JoinSet::new();
 
