@@ -1,5 +1,5 @@
 use async_channel::{Receiver, Sender, TryRecvError, bounded};
-use rtc::{Client, Propagated};
+use rtc::{Client, Propagated, RtpPacketVariant};
 use std::{
     collections::{HashMap, VecDeque},
     net::{IpAddr, SocketAddr},
@@ -8,7 +8,6 @@ use std::{
 use str0m::Candidate;
 use sysinfo::Networks;
 use tokio::net::UdpSocket;
-use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 pub mod session_manager;
@@ -125,6 +124,13 @@ impl Session {
     }
 
     fn propagate(&self, packet: &Propagated) {
+        if let Propagated::RtpPacket(id, p) = packet {
+            tracing::trace!("RTP packet from publisher {}", id);
+
+            for (id, client) in self.subscribers.iter_mut() {
+                client.write_rtp_packet(RtpPacketVariant::RtpPacket(p));
+            }
+        }
         todo!("the thing")
     }
 }

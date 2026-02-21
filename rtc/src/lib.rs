@@ -8,7 +8,6 @@ use std::time::Instant;
 use str0m::Event;
 use str0m::IceConnectionState;
 use str0m::Output;
-use str0m::format::Codec;
 use str0m::media::Mid;
 use str0m::rtp::ExtensionValues;
 use str0m::rtp::RtpPacket;
@@ -231,42 +230,62 @@ impl Client {
         }
     }
 
-    pub fn send_video(
-        &mut self,
-        rtp_video_channel: &mut Receiver<RtpPacketData>,
-    ) -> Result<(), RtcError> {
-        // * When there is a video RTP packet to send
-        if let Ok(packet) = rtp_video_channel.try_recv() {
-            // * Acquire a send stream and write the RTP packet
-            let mut direct_api = self.rtc.direct_api();
-            let stream_tx = direct_api
-                .stream_tx_by_mid(self.video_mid.unwrap(), None)
-                .unwrap();
-            match stream_tx.write_rtp(
-                packet.payload_type.into(),
-                (packet.sequence_number as u64).into(),
-                packet.timestamp.into(),
-                Instant::now(),
-                packet.marker, // marker
-                ExtensionValues::default(),
-                false, // not padding
-                packet.payload,
-            ) {
-                Ok(_) => {
-                    tracing::trace!(
-                        "Sent RTP packet: seq={:?}, ts={}",
-                        packet.sequence_number,
-                        packet.timestamp
-                    );
+    pub fn write_rtp_packet(&mut self, packet: RtpPacketVariant) {
+        // * Acquire a send stream and write the RTP packet
+        let mut direct_api = self.rtc.direct_api();
+        let stream_tx = direct_api
+            .stream_tx_by_mid(self.video_mid.unwrap(), None)
+            .unwrap();
+        match packet {
+            RtpPacketVariant::AppSinkRtpPacket(packet) => {
+                match stream_tx.write_rtp(
+                    packet.payload_type.into(),
+                    (packet.sequence_number as u64).into(),
+                    packet.timestamp.into(),
+                    Instant::now(),
+                    packet.marker, // marker
+                    ExtensionValues::default(),
+                    false, // not padding
+                    packet.payload,
+                ) {
+                    Ok(_) => {
+                        tracing::trace!(
+                            "Sent RTP packet: seq={:?}, ts={}",
+                            packet.sequence_number,
+                            packet.timestamp
+                        );
+                    }
+                    // TODO: handle specific PacketError cases
+                    Err(e) => {
+                        tracing::error!("Failed to send RTP packet: {:?}", e);
+                    }
                 }
-                // TODO: handle specific PacketError cases
-                Err(e) => {
-                    tracing::error!("Failed to send RTP packet: {:?}", e);
+            }
+            RtpPacketVariant::RtpPacket(packet) => {
+                match stream_tx.write_rtp(
+                    packet.header.payload_type,
+                    packet.seq_no,
+                    packet.header.timestamp,
+                    Instant::now(),
+                    packet.header.marker, // marker
+                    ExtensionValues::default(),
+                    false, // not padding
+                    packet.payload,
+                ) {
+                    Ok(_) => {
+                        tracing::trace!(
+                            "Sent RTP packet: seq={:?}, ts={}",
+                            packet.seq_no,
+                            packet.header.timestamp
+                        );
+                    }
+                    // TODO: handle specific PacketError cases
+                    Err(e) => {
+                        tracing::error!("Failed to send RTP packet: {:?}", e);
+                    }
                 }
             }
         }
-
-        Ok(())
     }
 }
 
@@ -282,8 +301,14 @@ pub enum Propagated {
     RtpPacket(Uuid, RtpPacket),
 }
 
+// TODO: come up with better names OR somehow wrap these up into a single type
+pub enum RtpPacketVariant {
+    RtpPacket(RtpPacket),
+    AppSinkRtpPacket(ParsedAppSinkRtpPacket),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RtpPacketData {
+pub struct ParsedAppSinkRtpPacket {
     pub payload_type: u8,
     pub sequence_number: u16,
     pub timestamp: u32,
