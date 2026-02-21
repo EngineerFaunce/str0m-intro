@@ -1,11 +1,11 @@
 use anyhow::{Result, anyhow};
 use gstreamer::{self as gst, prelude::*};
 use gstreamer_app::{AppSink, AppSinkCallbacks};
-use rtc::ParsedAppSinkRtpPacket;
+use rtc::OutboundRtpPacket;
 use tokio::sync::mpsc::Sender;
 use tracing::{debug, error, trace, warn};
 
-fn parse_rtp_packet(data: &[u8]) -> Option<ParsedAppSinkRtpPacket> {
+fn parse_rtp_packet(data: &[u8]) -> Option<OutboundRtpPacket> {
     if data.len() < 12 {
         return None;
     }
@@ -39,7 +39,7 @@ fn parse_rtp_packet(data: &[u8]) -> Option<ParsedAppSinkRtpPacket> {
         }
     }
 
-    Some(ParsedAppSinkRtpPacket {
+    Some(OutboundRtpPacket {
         payload_type,
         sequence_number,
         timestamp,
@@ -48,7 +48,7 @@ fn parse_rtp_packet(data: &[u8]) -> Option<ParsedAppSinkRtpPacket> {
     })
 }
 
-fn parse_sample(sample: &gst::Sample) -> Option<ParsedAppSinkRtpPacket> {
+fn parse_sample(sample: &gst::Sample) -> Option<OutboundRtpPacket> {
     let buffer = sample.buffer()?;
     let map = buffer.map_readable().ok()?;
     parse_rtp_packet(map.as_slice())
@@ -80,7 +80,7 @@ fn build_test_video_pipeline() -> Result<(gst::Pipeline, AppSink)> {
     Ok((pipeline, appsink))
 }
 
-pub async fn stream_test_video(sender_channel: Sender<ParsedAppSinkRtpPacket>) -> Result<()> {
+pub async fn stream_test_video(sender_channel: Sender<OutboundRtpPacket>) -> Result<()> {
     gst::init()?;
 
     // * Set up GStreamer pipeline

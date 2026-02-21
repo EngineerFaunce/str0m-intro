@@ -1,5 +1,5 @@
 use async_channel::{Receiver, Sender, TryRecvError, bounded};
-use rtc::{Client, Propagated, RtpPacketVariant};
+use rtc::{Client, Propagated};
 use std::{
     collections::{HashMap, VecDeque},
     net::{IpAddr, SocketAddr},
@@ -123,12 +123,12 @@ impl Session {
         }
     }
 
-    fn propagate(&self, packet: &Propagated) {
+    fn propagate(&mut self, packet: &Propagated) {
         if let Propagated::RtpPacket(id, p) = packet {
             tracing::trace!("RTP packet from publisher {}", id);
 
             for (id, client) in self.subscribers.iter_mut() {
-                client.write_rtp_packet(RtpPacketVariant::RtpPacket(p));
+                client.write_rtp_packet(p);
             }
         }
         todo!("the thing")

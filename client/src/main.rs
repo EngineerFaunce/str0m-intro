@@ -1,5 +1,5 @@
 use anyhow::Error;
-use rtc::{Client, ParsedAppSinkRtpPacket};
+use rtc::{Client, OutboundRtpPacket};
 use tokio::{
     sync::mpsc::{self, Receiver, Sender},
     task::JoinSet,
@@ -18,10 +18,7 @@ async fn main() -> Result<(), Error> {
     client.make_whip_request().await?;
 
     // * Channel for RTP packets
-    let (tx, _rx): (
-        Sender<ParsedAppSinkRtpPacket>,
-        Receiver<ParsedAppSinkRtpPacket>,
-    ) = mpsc::channel(100);
+    let (tx, _rx): (Sender<OutboundRtpPacket>, Receiver<OutboundRtpPacket>) = mpsc::channel(100);
     let token = CancellationToken::new();
     let mut set = JoinSet::new();
 

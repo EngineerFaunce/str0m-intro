@@ -18,7 +18,6 @@ use str0m::{
 use tokio::fs::File;
 use tokio::io::AsyncReadExt;
 use tokio::net::UdpSocket;
-use tokio::sync::mpsc::Receiver;
 use uuid::Uuid;
 
 #[derive(Debug)]
@@ -230,60 +229,34 @@ impl Client {
         }
     }
 
-    pub fn write_rtp_packet(&mut self, packet: RtpPacketVariant) {
+    pub fn write_rtp_packet<P: Into<OutboundRtpPacket>>(&mut self, packet: P) {
+        let packet = packet.into();
+
         // * Acquire a send stream and write the RTP packet
         let mut direct_api = self.rtc.direct_api();
         let stream_tx = direct_api
             .stream_tx_by_mid(self.video_mid.unwrap(), None)
             .unwrap();
-        match packet {
-            RtpPacketVariant::AppSinkRtpPacket(packet) => {
-                match stream_tx.write_rtp(
-                    packet.payload_type.into(),
-                    (packet.sequence_number as u64).into(),
-                    packet.timestamp.into(),
-                    Instant::now(),
-                    packet.marker, // marker
-                    ExtensionValues::default(),
-                    false, // not padding
-                    packet.payload,
-                ) {
-                    Ok(_) => {
-                        tracing::trace!(
-                            "Sent RTP packet: seq={:?}, ts={}",
-                            packet.sequence_number,
-                            packet.timestamp
-                        );
-                    }
-                    // TODO: handle specific PacketError cases
-                    Err(e) => {
-                        tracing::error!("Failed to send RTP packet: {:?}", e);
-                    }
-                }
+        match stream_tx.write_rtp(
+            packet.payload_type.into(),
+            (packet.sequence_number as u64).into(),
+            packet.timestamp.into(),
+            Instant::now(),
+            packet.marker, // marker
+            ExtensionValues::default(),
+            false, // not padding
+            packet.payload,
+        ) {
+            Ok(_) => {
+                tracing::trace!(
+                    "Sent RTP packet: seq={:?}, ts={}",
+                    packet.sequence_number,
+                    packet.timestamp
+                );
             }
-            RtpPacketVariant::RtpPacket(packet) => {
-                match stream_tx.write_rtp(
-                    packet.header.payload_type,
-                    packet.seq_no,
-                    packet.header.timestamp,
-                    Instant::now(),
-                    packet.header.marker, // marker
-                    ExtensionValues::default(),
-                    false, // not padding
-                    packet.payload,
-                ) {
-                    Ok(_) => {
-                        tracing::trace!(
-                            "Sent RTP packet: seq={:?}, ts={}",
-                            packet.seq_no,
-                            packet.header.timestamp
-                        );
-                    }
-                    // TODO: handle specific PacketError cases
-                    Err(e) => {
-                        tracing::error!("Failed to send RTP packet: {:?}", e);
-                    }
-                }
+            // TODO: handle specific PacketError cases
+            Err(e) => {
+                tracing::error!("Failed to send RTP packet: {:?}", e);
             }
         }
     }
@@ -301,17 +274,35 @@ pub enum Propagated {
     RtpPacket(Uuid, RtpPacket),
 }
 
-// TODO: come up with better names OR somehow wrap these up into a single type
-pub enum RtpPacketVariant {
-    RtpPacket(RtpPacket),
-    AppSinkRtpPacket(ParsedAppSinkRtpPacket),
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ParsedAppSinkRtpPacket {
+pub struct OutboundRtpPacket {
     pub payload_type: u8,
     pub sequence_number: u16,
     pub timestamp: u32,
     pub marker: bool,
     pub payload: Vec<u8>,
+}
+
+impl From<RtpPacket> for OutboundRtpPacket {
+    fn from(packet: RtpPacket) -> Self {
+        Self {
+            payload_type: *packet.header.payload_type,
+            sequence_number: packet.header.sequence_number,
+            timestamp: packet.header.timestamp.into(),
+            marker: packet.header.marker,
+            payload: packet.payload,
+        }
+    }
+}
+
+impl From<&RtpPacket> for OutboundRtpPacket {
+    fn from(packet: &RtpPacket) -> Self {
+        Self {
+            payload_type: *packet.header.payload_type,
+            sequence_number: packet.header.sequence_number,
+            timestamp: packet.header.timestamp.into(),
+            marker: packet.header.marker,
+            payload: packet.payload.clone(),
+        }
+    }
 }
