@@ -7,6 +7,7 @@ use std::time::Duration;
 use std::time::Instant;
 use str0m::Event;
 use str0m::IceConnectionState;
+use str0m::Input;
 use str0m::Output;
 use str0m::media::Mid;
 use str0m::rtp::ExtensionValues;
@@ -229,8 +230,26 @@ impl Client {
         }
     }
 
-    pub fn write_rtp_packet<P: Into<OutboundRtpPacket>>(&mut self, packet: P) {
-        let packet = packet.into();
+    pub fn accepts(&self, input: &Input) -> bool {
+        self.rtc.accepts(input)
+    }
+
+    pub fn handle_input(&mut self, input: Input) {
+        if !self.rtc.is_alive() {
+            return;
+        }
+
+        if let Err(e) = self.rtc.handle_input(input) {
+            tracing::warn!("Client ({}) disconnected: {:?}", self.id, e);
+            self.rtc.disconnect();
+        }
+    }
+
+    pub fn write_rtp_packet<P>(&mut self, packet: P)
+    where
+        OutboundRtpPacket: From<P>,
+    {
+        let packet = OutboundRtpPacket::from(packet);
 
         // * Acquire a send stream and write the RTP packet
         let mut direct_api = self.rtc.direct_api();

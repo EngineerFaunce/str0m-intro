@@ -2,10 +2,14 @@ use async_channel::{Receiver, Sender, TryRecvError, bounded};
 use rtc::{Client, Propagated};
 use std::{
     collections::{HashMap, VecDeque},
+    io::ErrorKind,
     net::{IpAddr, SocketAddr},
     time::Instant,
 };
-use str0m::Candidate;
+use str0m::{
+    Candidate, Input,
+    net::{Protocol, Receive},
+};
 use sysinfo::Networks;
 use tokio::net::UdpSocket;
 use uuid::Uuid;
@@ -60,6 +64,7 @@ impl Session {
     /// Drive the state of the session.
     pub async fn start(&mut self) {
         let mut to_propagate: VecDeque<Propagated> = VecDeque::new();
+        let mut buf = vec![0; 2000];
         loop {
             self.refresh();
 
@@ -75,7 +80,25 @@ impl Session {
             // ? No need to set socket read timeout since we're using tokio::net::UdpSocket?
 
             for (id, client) in self.subscribers.iter_mut() {
-                // TODO: Poll the subscribers until timeout
+                tracing::trace!("polling subscriber: {:?}", id);
+                let _propagated = client.poll_output(&self.socket).await;
+                // TODO: do we need to do anything with the output, or do we only care about driving the state forward?
+            }
+
+            if let Some(input) = read_socket_input(&self.socket, &mut buf).await {
+                // The rtc.accepts() call is how we demultiplex the incoming packet to know which Rtc instance the traffic belongs to
+                if self.publisher.accepts(&input) {
+                    self.publisher.handle_input(input);
+                } else if let Some((_, client)) =
+                    self.subscribers.iter_mut().find(|(_, c)| c.accepts(&input))
+                {
+                    // We found the client that accepts the input.
+                    client.handle_input(input);
+                } else {
+                    // This is quite common because we don't get the Rtc instance via the mpsc channel
+                    // quickly enough before the browser send the first STUN.
+                    tracing::debug!("No client accepts UDP input: {:?}", input);
+                }
             }
         }
     }
@@ -127,11 +150,41 @@ impl Session {
         if let Propagated::RtpPacket(id, p) = packet {
             tracing::trace!("RTP packet from publisher {}", id);
 
-            for (id, client) in self.subscribers.iter_mut() {
+            for (_, client) in self.subscribers.iter_mut() {
                 client.write_rtp_packet(p);
             }
         }
-        todo!("the thing")
+    }
+}
+
+async fn read_socket_input<'a>(socket: &UdpSocket, buf: &'a mut Vec<u8>) -> Option<Input<'a>> {
+    buf.resize(2000, 0);
+
+    match socket.recv_from(buf).await {
+        Ok((n, source)) => {
+            buf.truncate(n);
+
+            // Parse data to a DatagramRecv
+            let Ok(contents) = buf.as_slice().try_into() else {
+                return None;
+            };
+
+            Some(Input::Receive(
+                Instant::now(),
+                Receive {
+                    proto: Protocol::Udp,
+                    source,
+                    destination: socket.local_addr().unwrap(),
+                    contents,
+                },
+            ))
+        }
+
+        Err(e) => match e.kind() {
+            // Expected error for set_read_timeout(). One for windows, one for the rest.
+            ErrorKind::WouldBlock | ErrorKind::TimedOut => None,
+            _ => panic!("UdpSocket read failed: {e:?}"),
+        },
     }
 }
 
