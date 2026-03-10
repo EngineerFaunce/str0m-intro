@@ -4,14 +4,15 @@ use std::{
     collections::{HashMap, VecDeque},
     io::ErrorKind,
     net::{IpAddr, SocketAddr},
-    time::Instant,
+    time::{Duration, Instant},
 };
 use str0m::{
-    Candidate, Input,
+    Input,
     net::{Protocol, Receive},
 };
 use sysinfo::Networks;
 use tokio::net::UdpSocket;
+use tracing::{info, trace, warn};
 use uuid::Uuid;
 
 pub mod session_manager;
@@ -41,9 +42,7 @@ impl Session {
             Err(_) => panic!("failed to get session socket address"),
         };
 
-        publisher.rtc.add_local_candidate(
-            Candidate::host(socket_addr, str0m::net::Protocol::Udp).expect("a host candidate"),
-        );
+        publisher.add_local_candidate(socket_addr);
 
         // * Channel for receiving WHEP clients later on
         let (tx, rx) = bounded(10);
@@ -66,39 +65,63 @@ impl Session {
         let mut to_propagate: VecDeque<Propagated> = VecDeque::new();
         let mut buf = vec![0; 2000];
         loop {
+            if !self.publisher.rtc.is_alive() {
+                info!("Publisher disconnected. Ending session.");
+                break;
+            }
             self.refresh();
 
-            let _t = self.poll_until_timeout(&mut to_propagate).await;
+            trace!("Polling publisher: {}", self.publisher.id);
+            let mut timeout = self
+                .publisher
+                .poll_until_timeout(&self.socket, Some(&mut to_propagate))
+                .await;
 
-            // TODO: call method to forward media from publisher to subscribers.
-            // If we have an item to propagate, do that
+            // If we have an item to propagate, do so
             if let Some(p) = to_propagate.pop_front() {
                 self.propagate(&p);
+                // ? Why are we continuing here? Is it to ensure we drain the queue?
                 continue;
             }
 
-            // ? No need to set socket read timeout since we're using tokio::net::UdpSocket?
-
             for (id, client) in self.subscribers.iter_mut() {
-                tracing::trace!("polling subscriber: {:?}", id);
-                let _propagated = client.poll_output(&self.socket).await;
-                // TODO: do we need to do anything with the output, or do we only care about driving the state forward?
+                trace!("Polling subscriber: {:?}", id);
+                timeout = client.poll_until_timeout(&self.socket, None).await;
             }
 
-            if let Some(input) = read_socket_input(&self.socket, &mut buf).await {
-                // The rtc.accepts() call is how we demultiplex the incoming packet to know which Rtc instance the traffic belongs to
-                if self.publisher.accepts(&input) {
-                    self.publisher.handle_input(input);
-                } else if let Some((_, client)) =
-                    self.subscribers.iter_mut().find(|(_, c)| c.accepts(&input))
-                {
-                    // We found the client that accepts the input.
-                    client.handle_input(input);
-                } else {
-                    // This is quite common because we don't get the Rtc instance via the mpsc channel
-                    // quickly enough before the browser send the first STUN.
-                    tracing::debug!("No client accepts UDP input: {:?}", input);
+            let duration = (timeout - Instant::now()).max(Duration::from_millis(20));
+
+            let result =
+                tokio::time::timeout(duration, read_socket_input(&self.socket, &mut buf)).await;
+            match result {
+                Ok(option) => {
+                    if let Some(input) = option {
+                        info!("Read socket input. Determining client that accepts.");
+                        // The rtc.accepts() call is how we demultiplex the incoming packet to know which Rtc instance the traffic belongs to
+                        if self.publisher.accepts(&input) {
+                            info!("Publisher accepts input.");
+                            self.publisher.handle_input(input);
+                        } else if let Some((_, client)) =
+                            self.subscribers.iter_mut().find(|(_, c)| c.accepts(&input))
+                        {
+                            client.handle_input(input);
+                        } else {
+                            // TODO: does this occur and if so, should we handle it somehow?
+                            warn!("No client accepts UDP input: {:?}", input);
+                        }
+                    } else {
+                        warn!("No socket input.");
+                    }
                 }
+                Err(_) => {
+                    warn!("Reading socket input timed out.");
+                }
+            }
+            // Drive state forward for session
+            trace!("Driving session state forward.");
+            self.publisher.handle_input(Input::Timeout(Instant::now()));
+            for (_, client) in self.subscribers.iter_mut() {
+                client.handle_input(Input::Timeout(Instant::now()));
             }
         }
     }
@@ -106,53 +129,45 @@ impl Session {
     // TODO: better name?
     /// Refreshes the session state by pruning disconnected clients and checking for new subscribers
     fn refresh(&mut self) {
-        self.subscribers.retain(|id, client| {
-            if !client.rtc.is_alive() {
-                tracing::trace!("Pruning subscriber: {id}");
-                false
-            } else {
-                true
-            }
-        });
+        if !self.subscribers.is_empty() {
+            trace!("Pruning disconnected subscribers from session: {}", self.id);
+            self.subscribers.retain(|id, client| {
+                if !client.rtc.is_alive() {
+                    trace!("Pruning subscriber: {id}");
+                    false
+                } else {
+                    true
+                }
+            });
+        }
 
         match self.new_subscribers_rx.try_recv() {
             Ok(mut subscriber) => {
-                subscriber.rtc.add_local_candidate(
-                    Candidate::host(self.socket_addr, str0m::net::Protocol::Udp)
-                        .expect("a host candidate"),
-                );
-
+                trace!("Adding new subscriber to session: {}", subscriber.id);
+                // TODO: is this necessary?
+                subscriber.add_local_candidate(self.socket_addr);
                 // TODO: do something with option here?
                 let _res = self.subscribers.insert(subscriber.id, subscriber);
             }
-            Err(TryRecvError::Empty) => tracing::trace!("subscriber channel empty"),
-            _ => panic!("Subscriber receiver disconnected."),
+            Err(TryRecvError::Empty) => {
+                // trace!("subscriber channel empty");
+            }
+            Err(e) => {
+                panic!("unhandled subscriber channel error: {:?}", e);
+            }
         }
     }
 
-    async fn poll_until_timeout(&mut self, queue: &mut VecDeque<Propagated>) -> Instant {
-        loop {
-            if !self.publisher.rtc.is_alive() {
-                return Instant::now();
-            }
-
-            let propagated = self.publisher.poll_output(&self.socket).await;
-
-            if let Propagated::Timeout(t) = propagated {
-                return t;
-            }
-
-            queue.push_back(propagated)
-        }
-    }
-
+    /// Transmits a RTP packet to every subscriber
     fn propagate(&mut self, packet: &Propagated) {
         if let Propagated::RtpPacket(id, p) = packet {
-            tracing::trace!("RTP packet from publisher {}", id);
+            trace!("Forwarding RTP packet from publisher: {}", id);
 
             for (_, client) in self.subscribers.iter_mut() {
                 client.write_rtp_packet(p);
             }
+        } else {
+            trace!("No RTP packet to forward.");
         }
     }
 }
@@ -169,6 +184,8 @@ async fn read_socket_input<'a>(socket: &UdpSocket, buf: &'a mut Vec<u8>) -> Opti
                 return None;
             };
 
+            trace!("Received datagram message from {}", source);
+
             Some(Input::Receive(
                 Instant::now(),
                 Receive {
@@ -182,7 +199,7 @@ async fn read_socket_input<'a>(socket: &UdpSocket, buf: &'a mut Vec<u8>) -> Opti
 
         Err(e) => match e.kind() {
             // Expected error for set_read_timeout(). One for windows, one for the rest.
-            ErrorKind::WouldBlock | ErrorKind::TimedOut => None,
+            ErrorKind::WouldBlock | ErrorKind::TimedOut => Some(Input::Timeout(Instant::now())),
             _ => panic!("UdpSocket read failed: {e:?}"),
         },
     }

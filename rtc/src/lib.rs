@@ -2,14 +2,20 @@ use anyhow::Error;
 use anyhow::Result;
 use reqwest::header::{ACCEPT, HeaderValue};
 use reqwest::{ClientBuilder, header::CONTENT_TYPE};
+use std::collections::VecDeque;
+use std::io::ErrorKind;
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 use std::time::Instant;
+use str0m::Candidate;
 use str0m::Event;
 use str0m::IceConnectionState;
 use str0m::Input;
 use str0m::Output;
 use str0m::media::Mid;
+use str0m::net::Protocol;
+use str0m::net::Receive;
 use str0m::rtp::ExtensionValues;
 use str0m::rtp::RtpPacket;
 use str0m::{
@@ -19,6 +25,10 @@ use str0m::{
 use tokio::fs::File;
 use tokio::io::AsyncReadExt;
 use tokio::net::UdpSocket;
+use tracing::error;
+use tracing::info;
+use tracing::trace;
+use tracing::warn;
 use uuid::Uuid;
 
 #[derive(Debug)]
@@ -36,7 +46,7 @@ impl Client {
             .clear_codecs()
             .enable_h264(true)
             .set_stats_interval(Some(Duration::from_secs(2)))
-            .build();
+            .build(Instant::now());
 
         Ok(Self {
             id: uuid::Uuid::new_v4(),
@@ -52,6 +62,7 @@ impl Client {
         self.video_mid = Some(change.add_media(
             str0m::media::MediaKind::Video,
             str0m::media::Direction::SendOnly, // The offer *should* use the sendonly attribute
+            None,
             None,
             None,
         ));
@@ -122,6 +133,7 @@ impl Client {
             str0m::media::Direction::RecvOnly, // The offer *should* use the recvonly attribute
             None,
             None,
+            None,
         ));
         let (offer, pending) = change.apply().unwrap();
 
@@ -170,15 +182,41 @@ impl Client {
         Ok(())
     }
 
-    pub async fn poll_output(&mut self, socket: &UdpSocket) -> Propagated {
+    /// Polls the client until we receive a timeout.
+    /// If a queue was passed, we push non-timeout events onto it
+    pub async fn poll_until_timeout(
+        &mut self,
+        socket: &UdpSocket,
+        mut queue: Option<&mut VecDeque<Propagated>>,
+    ) -> Instant {
+        loop {
+            if !self.rtc.is_alive() {
+                return Instant::now();
+            }
+
+            let propagated = self.poll_output(socket).await;
+            // trace!("Propagated: {:?}", propagated);
+
+            if let Propagated::Timeout(t) = propagated {
+                return t;
+            }
+
+            if let Some(q) = queue.as_deref_mut() {
+                q.push_back(propagated);
+            }
+        }
+    }
+
+    async fn poll_output(&mut self, socket: &UdpSocket) -> Propagated {
         if !self.rtc.is_alive() {
+            trace!("Rtc instance not alive. Returning no-op.");
             return Propagated::Noop;
         }
 
         match self.rtc.poll_output() {
             Ok(output) => self.handle_output(socket, output).await,
             Err(e) => {
-                tracing::warn!("Client ({}) poll_output failed: {:?}", &self.id, e);
+                warn!("Client ({}) poll_output failed: {:?}", &self.id, e);
                 self.rtc.disconnect();
                 Propagated::Noop
             }
@@ -196,7 +234,7 @@ impl Client {
                     .send_to(&transmit.contents, transmit.destination)
                     .await
                 {
-                    tracing::warn!(
+                    warn!(
                         "sending to {} => {}, len {} error {:?}",
                         transmit.source,
                         transmit.destination,
@@ -208,26 +246,108 @@ impl Client {
             }
             Output::Event(event) => match event {
                 Event::Connected => {
-                    tracing::trace!("ICE connected and established DTLS.");
+                    info!("ICE connected and established DTLS.");
                     Propagated::Noop
                 }
                 Event::IceConnectionStateChange(IceConnectionState::Disconnected) => {
-                    tracing::trace!("ICE disconnected");
+                    info!("ICE disconnected");
                     self.rtc.disconnect();
                     Propagated::Noop
                 }
                 Event::MediaAdded(media) => {
-                    tracing::trace!("Media added: {:?}", media);
-                    tracing::trace!("Codec config: {:?}", self.rtc.codec_config());
+                    trace!("Media direction: {}", media.direction);
+                    trace!("Codec config: {:?}", self.rtc.codec_config());
                     Propagated::Noop
                 }
                 Event::RtpPacket(packet) => {
-                    tracing::trace!("RTP packet: {:?}", packet);
+                    info!("RTP packet event received: {:?}", packet);
                     Propagated::RtpPacket(self.id, packet)
                 }
-                _ => Propagated::Noop,
+                Event::MediaData(_) => {
+                    info!("Incoming media data from remote peer.");
+                    Propagated::Noop
+                }
+                Event::MediaChanged(_) => {
+                    info!("Media changed.");
+                    Propagated::Noop
+                }
+                _ => {
+                    warn!("Unhandled event.");
+                    Propagated::Noop
+                }
             },
         }
+    }
+
+    // TODO: better name?
+    pub async fn recv(&mut self, socket: &UdpSocket) -> Result<WebRtcEvent, Error> {
+        let timeout = match self.poll_output(&socket).await {
+            Propagated::Noop => {
+                info!("no-op event, continuing");
+                return Ok(WebRtcEvent::Continue);
+            }
+            Propagated::Timeout(timeout) => timeout,
+            Propagated::RtpPacket(_, _) => {
+                panic!("publisher received RTP packet")
+            }
+        };
+
+        let duration = (timeout - Instant::now()).max(Duration::from_millis(20));
+        trace!("Timeout duration: {:?}", duration);
+
+        let mut buf = vec![0; 2000];
+        match tokio::time::timeout(duration, socket.recv_from(&mut buf)).await {
+            Ok(result) => {
+                let input = match result {
+                    Ok((n, source)) => {
+                        buf.truncate(n);
+
+                        // Parse data to a DatagramRecv
+                        let Ok(contents) = buf.as_slice().try_into() else {
+                            panic!("idk")
+                        };
+
+                        Input::Receive(
+                            Instant::now(),
+                            Receive {
+                                proto: Protocol::Udp,
+                                source,
+                                destination: socket.local_addr().unwrap(),
+                                contents,
+                            },
+                        )
+                    }
+
+                    Err(e) => match e.kind() {
+                        // Expected error for set_read_timeout(). One for windows, one for the rest.
+                        ErrorKind::WouldBlock | ErrorKind::TimedOut => {
+                            Input::Timeout(Instant::now())
+                        }
+                        _ => panic!("UdpSocket read failed: {e:?}"),
+                    },
+                };
+
+                // TODO: handle errors
+                match self.rtc.handle_input(input) {
+                    Ok(_) => {}
+                    Err(e) => {
+                        panic!("unhandled RtcError: {:?}", e)
+                    }
+                }
+            }
+            Err(_) => {
+                // error!("Duration has elapsed before future could complete.");
+            }
+        }
+
+        match self.rtc.handle_input(Input::Timeout(Instant::now())) {
+            Ok(()) => trace!("driving state of publisher: {}", self.id),
+            Err(e) => {
+                error!("Unhandled error: {:?}", e);
+            }
+        }
+
+        Ok(WebRtcEvent::Continue)
     }
 
     pub fn accepts(&self, input: &Input) -> bool {
@@ -267,10 +387,11 @@ impl Client {
             packet.payload,
         ) {
             Ok(_) => {
-                tracing::trace!(
-                    "Sent RTP packet: seq={:?}, ts={}",
+                tracing::debug!(
+                    "Sent RTP packet: seq={:?}, ts={}, pt={}",
                     packet.sequence_number,
-                    packet.timestamp
+                    packet.timestamp,
+                    packet.payload_type
                 );
             }
             // TODO: handle specific PacketError cases
@@ -279,6 +400,20 @@ impl Client {
             }
         }
     }
+
+    /// Wrapper function for adding a local candidate
+    pub fn add_local_candidate(&mut self, socket_addr: SocketAddr) {
+        let candidate = Candidate::host(socket_addr, Protocol::Udp).unwrap();
+        self.rtc.add_local_candidate(candidate);
+    }
+}
+
+// Possible events for publisher RTC client
+#[derive(Debug)]
+pub enum WebRtcEvent {
+    Continue,
+    Disconnected,
+    RtpPacket(RtpPacket),
 }
 
 #[derive(Debug)]

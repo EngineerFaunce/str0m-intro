@@ -39,6 +39,10 @@ fn parse_rtp_packet(data: &[u8]) -> Option<OutboundRtpPacket> {
         }
     }
 
+    trace!(
+        "Parsed RTP packet - pt: {}, seq_no: {}, ts: {}",
+        payload_type, sequence_number, timestamp
+    );
     Some(OutboundRtpPacket {
         payload_type,
         sequence_number,
@@ -97,9 +101,12 @@ pub async fn stream_test_video(sender_channel: Sender<OutboundRtpPacket>) -> Res
                 };
 
                 match sender_channel.try_send(packet) {
-                    Ok(_) => Ok(gstreamer::FlowSuccess::Ok),
+                    Ok(_) => {
+                        // trace!("Packet sent.");
+                        Ok(gstreamer::FlowSuccess::Ok)
+                    }
                     Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                        tracing::warn!("Channel full, dropping packet");
+                        warn!("Media channel full, dropping packet");
                         Ok(gstreamer::FlowSuccess::Ok) // Drop packet but continue
                     }
                     Err(_) => {
