@@ -13,7 +13,7 @@ rtc = { path = "../rtc" }
 rustls = "0.23.19"
 serde = "1.0.217"
 serde_json = "1.0.133"
-str0m = "0.6.3"
+str0m = "0.16.2"
 sysinfo = "0.36.1"
 tokio = { version = "1.41.1", features = ["full"] }
 tokio-util = "0.7.16"

@@ -7,7 +7,7 @@ edition = "2024"
 anyhow = "1.0.95"
 rand = "0.8"
 reqwest = { version = "0.12.9", features = ["blocking", "json"] }
-str0m = "0.6.3"
+str0m = "0.16.2"
 tokio = { version = "1.41.1", features = ["full"] }
 tokio-util = "0.7.16"
 tracing = "0.1.41"
